@@ -17,6 +17,8 @@ services:
   ui:
     build:
       context: ./ui
+    labels:
+      shipyard.route: '/'
     container_name: ui
     hostname: ui
     image: martian-bank-ui
