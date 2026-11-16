@@ -47,29 +47,40 @@ Black Friday arc: 3 → 10 (rumbling) → 30 (the run) → 30 + Knob 2/3 (the cr
 
 ---
 
-## Knob 2 — Edge latency injection ("everything is spinning")
+## Knob 2 — Edge latency injection ("everything is spinning") — CERTIFIED
 
-**Blast radius:** every customer request through the front door is delayed
-2s; backend unaffected. **Signals:** Faro LCP/latency degradation, user-side
-errors from frustrated timing; edge span latency quantiles jump.
-
-Attach (live, no app restart):
+Latency = a tiny `bank-delayer` sleep service reached via the `bank-latency`
+forwardAuth middleware. **Verified end-to-end 2026-11-16:** base 0.42s →
+2.44s at `DELAY_MS=2000` → back to 0.42s at 0.
 
 ```sh
+# attach (adds the delay dial to every bank request)
 $K patch ingress martian-bank --type merge \
-  -p '{"metadata":{"annotations":{"traefik.ingress.kubernetes.io/router.middlewares":"martian-bank-bank-delay@kubernetescrd"}}}'
-```
-
-Detach (restore):
-
-```sh
+  -p '{"metadata":{"annotations":{"traefik.ingress.kubernetes.io/router.middlewares":"martian-bank-bank-latency@kubernetescrd"}}}'
+# dial the pain live (each patch rolls ONE pod; wait ~30s to settle)
+$K patch deploy bank-delayer -p '{"spec":{"template":{"spec":{"containers":[{"name":"delayer","env":[{"name":"DELAY_MS","value":"2000"}]}]}}}}'
+# restore
+$K patch deploy bank-delayer -p '{"spec":{"template":{"spec":{"containers":[{"name":"delayer","env":[{"name":"DELAY_MS","value":"0"}]}]}}}}'
 $K patch ingress martian-bank --type merge \
   -p '{"metadata":{"annotations":{"traefik.ingress.kubernetes.io/router.middlewares":null}}}'
 ```
 
-Change the pain level: `kubectl edit middleware bank-delay` (live edit, same-ns
-name suffices) — `milliseconds: 2000` up to anything. Traefik picks it up in
-~seconds with zero restarts.
+Operational truths baked in:
+
+- **Argo self-heal ignores this knob by design** (`ignoreDifferences` in
+  `deploy/argocd.yaml` covers the ingress middleware annotation and the
+  delayer's env). Runtime patches survive; both dial mechanisms stay live
+  until you set them back.
+- traefik 2.9.4 has **no delay middleware** (binary, not CRD): the
+  forwardAuth-delayer pattern is the substitute. If traefik is ever
+  upgraded ≥2.10, a native `delay` middleware could replace this.
+- The forwardAuth address is a **pinned ClusterIP** (10.43.124.255) because
+  traefik's hostNetwork pods resolve in-cluster service DNS unreliably —
+  same reason `kube-civo-auth` pins one. If the Service is recreated,
+  re-read `kubectl get svc bank-delayer -o jsonpath='{.spec.clusterIP}'`
+  and update the middleware (via git: `deploy/manifests/bank-latency.yaml`).
+- Mid-dial measurements race pod rolls (old pods terminating keep serving
+  briefly) — wait ~30s after `DELAY_MS` patches before judging numbers.
 
 ---
 
