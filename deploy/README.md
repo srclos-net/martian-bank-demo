@@ -52,3 +52,13 @@ deployment/customer-auth -n martian-bank`.
   doesn't exist in this chart) — the real Ingress lives in `manifests/`.
 - The chart templates ignore `.Values.resources`, so pods run without
   resource requests (fine for a demo; do not scale this onto a busy cluster).
+
+## Moved out (2026-11-16)
+
+The OBI (eBPF instrumentation) stack — ClusterRole/Binding, ServiceAccount,
+`obi-config` ConfigMap, DaemonSet and its Argo Application — moved to
+github.com/appcd-dev/fe-stackgen-run-infra (repo `obi/`, Application
+`argocd/obi.yaml`) because it is shared cluster observability, not
+bank-owned. History: adopted into Argo from this repo on 2026-11-16 (see
+that repo's `obi/README.md`), then relocated the same day. Do not recreate
+OBI resources here — fe-stackgen-run's `obi` Application prunes them.
