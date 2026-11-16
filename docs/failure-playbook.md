@@ -6,15 +6,25 @@ they patch fields Argo CD doesn't own, or state Argo CD doesn't manage).
 Restore commands are listed with every knob.
 
 Context: https://bank.stackgen.run · virtual users: 3 via Locust
-(https://locust.stackgen.run) · cluster: fe-stackgen-run (Civo k3s),
-namespace `martian-bank` · kubectl: use `/opt/homebrew/bin/kubectl`
-(the plain `kubectl` on the Mac is broken).
+(https://locust.stackgen.run, **Google SSO via the shared oauth2-proxy** —
+sign-in lives at otel-demo.stackgen.run, session cookie covers *.stackgen.run)
+· cluster: fe-stackgen-run (Civo k3s), namespace `martian-bank` ·
+kubectl: use `/opt/homebrew/bin/kubectl` (the plain `kubectl` on the Mac is
+broken).
 
 Quick shorthand for all commands:
 
 ```sh
 K="kubectl --context fe-stackgen-run -n martian-bank"
 ```
+
+> **SSO note:** the locust host is gated by the shared oauth2-proxy. In a
+> browser just click through Google sign-in. For raw `curl` use ONE of:
+> (a) a port-forward bypassing the gate:
+> `kubectl --context fe-stackgen-run port-forward -n martian-bank svc/locust 8098:8098`
+> and hit `http://localhost:8098` instead of the public host, or (b) copy the
+> `_oauth2_proxy` cookie from your browser's devtools and pass
+> `-H "Cookie: _oauth2_proxy=<value>"`.
 
 ---
 
@@ -24,14 +34,14 @@ K="kubectl --context fe-stackgen-run -n martian-bank"
 request/latency growth, OBI service-graph edges warm up, no errors by itself.
 
 - **Browser**: open https://locust.stackgen.run → set users + spawn rate → Start.
-- **API** (same thing the button does):
+- **API** (same thing the button does; see SSO note above for cookie/forward):
 
   ```sh
-  curl -s -X POST https://locust.stackgen.run/swarm -H 'Content-Type: application/json' -d '{"user_count": 30, "spawn_rate": 2}'
+  curl -s -X POST http://localhost:8098/swarm -H 'Content-Type: application/json' -d '{"user_count": 30, "spawn_rate": 2}'
   ```
 
-- **Stop the storm**: `curl -s -X POST https://locust.stackgen.run/stop`
-- **Peek at RPS/errors**: `curl -s https://locust.stackgen.run/stats/requests | python3 -m json.tool | head -40`
+- **Stop the storm**: `curl -s -X POST http://localhost:8098/stop`
+- **Peek at RPS/errors**: `curl -s http://localhost:8098/stats/requests | python3 -m json.tool | head -40`
 
 Black Friday arc: 3 → 10 (rumbling) → 30 (the run) → 30 + Knob 2/3 (the crash).
 

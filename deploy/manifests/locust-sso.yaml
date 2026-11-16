@@ -1,0 +1,19 @@
+# SSO gate for the locust control panel: reuses the shared oauth2-proxy
+# (otel-demo.stackgen.run, Google provider, .stackgen.run cookie domain)
+# via its nginx+lua error-page redirector on port 8080 — the same pattern
+# as kube-civo-auth (kubernetes-dashboard ns). Unauthenticated requests
+# get a 302 to the Google sign-in and come back with the session cookie.
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: locust-sso
+  labels:
+    app.kubernetes.io/part-of: martian-bank
+spec:
+  forwardAuth:
+    address: http://oauth-redirector.otel-demo.svc.cluster.local:8080/
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-Auth-Request-Email
+      - X-Auth-Request-User
+      - Set-Cookie
