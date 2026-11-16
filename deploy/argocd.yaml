@@ -27,3 +27,13 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+  # The failure-playbook knobs (Traefik middleware attach/detach) are runtime
+  # state: ignore just the middleware-attachment annotation so Argo self-heal
+  # leaves the demo dials alone. External-dns/cert-manager annotations and the
+  # ingress spec stay fully managed.
+  ignoreDifferences:
+    - group: networking.k8s.io
+      kind: Ingress
+      name: martian-bank
+      jsonPointers:
+        - /metadata/annotations/traefik.ingress.kubernetes.io~1router.middlewares
