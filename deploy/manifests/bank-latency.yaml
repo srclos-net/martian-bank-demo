@@ -103,5 +103,8 @@ spec:
   # forwardAuth to the delayer: 200 passes, and every bank request waits
   # DELAY_MS longer. Set DELAY_MS=0 on the deployment for a no-op knob.
   forwardAuth:
-    address: http://bank-delayer.martian-bank.svc.cluster.local:8080
+    # ClusterIP pinned: traefik's hostNetwork pods cannot reliably resolve
+    # in-cluster service DNS (same reason kube-civo-auth pins an IP).
+    # NOTE: re-check the ClusterIP if the Service is ever recreated.
+    address: http://10.43.124.255:8080
     trustForwardHeader: true
