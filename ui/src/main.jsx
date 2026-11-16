@@ -6,6 +6,47 @@
 
 import React from "react";
 import ReactDOM from "react-dom/client";
+import {
+  initializeFaro,
+  getWebInstrumentations,
+} from "@grafana/faro-web-sdk";
+import { ReactIntegration } from "@grafana/faro-react";
+import {
+  createRoutesFromChildren,
+  matchRoutes,
+  useLocation,
+  useNavigationType,
+} from "react-router-dom";
+
+// Frontend (RUM) telemetry to the estate Faro collector -> ObserveNow
+// (stephgen-medussa). Endpoint can be overridden per build with VITE_FARO_URL.
+if (import.meta.env.VITE_FARO_DISABLED !== "true") {
+  initializeFaro({
+    url: import.meta.env.VITE_FARO_URL ?? "https://faro.stackgen.run/collect",
+    app: {
+      name: "martian-bank-ui",
+      version: "1.0.0",
+      environment: "prod",
+    },
+    sessionTracking: { persistent: true },
+    instrumentations: [
+      ...getWebInstrumentations({
+        enableErrorTracking: true,
+        captureConsole: true,
+        captureGlobalErrors: true,
+      }),
+      new ReactIntegration({
+        router: new ReactIntegration.ReactRouterV6Instrumentation({
+          createRoutesFromChildren,
+          matchRoutes,
+          useLocation,
+          useNavigationType,
+        }),
+      }),
+    ],
+  });
+}
+
 import 'mdb-react-ui-kit/dist/css/mdb.min.css';
 import "@fortawesome/fontawesome-free/css/all.min.css";
 import App from "./App.jsx";

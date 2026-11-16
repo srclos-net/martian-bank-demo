@@ -16,7 +16,7 @@ spec:
         spec:
             containers:
                 - name: ui
-                  image: ghcr.io/cisco-open/martian-bank-demo-ui
+                  image: {{ .Values.image.repository }}-ui{{ if .Values.image.tag }}:{{ .Values.image.tag }}{{ end }}
                   env: 
                     {{- if .Values.nginx.enabled }}
                       - name: VITE_USERS_URL
@@ -79,7 +79,7 @@ spec:
         spec:
             containers:
                 - name: dashboard
-                  image: ghcr.io/cisco-open/martian-bank-demo-dashboard
+                  image: {{ .Values.image.repository }}-dashboard{{ if .Values.image.tag }}:{{ .Values.image.tag }}{{ end }}
                   env:
                       - name: SERVICE_PROTOCOL
                         value: {{.Values.SERVICE_PROTOCOL}}
@@ -132,7 +132,7 @@ spec:
         spec:
             containers:
                 - name: customer-auth
-                  image: ghcr.io/cisco-open/martian-bank-demo-customer-auth
+                  image: {{ .Values.image.repository }}-customer-auth{{ if .Values.image.tag }}:{{ .Values.image.tag }}{{ end }}
                   env:
                     {{- if not .Values.mongodb.enabled }}
                       - name: DATABASE_HOST
@@ -184,7 +184,7 @@ spec:
         spec:
             containers:
                 - name: atm-locator
-                  image: ghcr.io/cisco-open/martian-bank-demo-atm-locator
+                  image: {{ .Values.image.repository }}-atm-locator{{ if .Values.image.tag }}:{{ .Values.image.tag }}{{ end }}
                   env:
                     {{- if not .Values.mongodb.enabled }}
                       - name: DATABASE_HOST
@@ -234,7 +234,7 @@ spec:
         spec:
             containers:
                 - name: nginx
-                  image: ghcr.io/cisco-open/martian-bank-demo-nginx 
+                  image: {{ .Values.image.repository }}-nginx{{ if .Values.image.tag }}:{{ .Values.image.tag }}{{ end }}
 ---
 apiVersion: v1
 kind: Service
@@ -272,7 +272,7 @@ spec:
         spec:
             containers:
                 - name: locust
-                  image: ghcr.io/cisco-open/martian-bank-demo-locust
+                  image: {{ .Values.image.repository }}-locust{{ if .Values.image.tag }}:{{ .Values.image.tag }}{{ end }}
                   env:
                     - name: VITE_USERS_URL
                       value: http://customer-auth:8000/api/users

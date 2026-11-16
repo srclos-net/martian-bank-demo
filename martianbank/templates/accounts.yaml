@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: accounts
-          image: ghcr.io/cisco-open/martian-bank-demo-accounts
+          image: {{ .Values.image.repository }}-accounts{{ if .Values.image.tag }}:{{ .Values.image.tag }}{{ end }}
           envFrom:
             - configMapRef:
                 name: configmap-martianbank

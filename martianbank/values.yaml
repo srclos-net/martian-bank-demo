@@ -5,9 +5,13 @@
 replicaCount: 1
 
 image:
-  repository: nginx
+  # Legacy top-level entry kept from upstream; the service images actually
+  # deployed by this chart come from image.repository below (the per-service
+  # templates render <repository>-<service>).
+  repository: "ghcr.io/cisco-open/martian-bank-demo"
   pullPolicy: IfNotPresent
-  # Overrides the image tag whose default is the chart appVersion.
+  # Empty -> implicit :latest (upstream behavior). CI sets this to sha-<sha>
+  # in deploy/values-civo.yaml so Argo CD syncs a pinned, immutable image.
   tag: ""
 
 imagePullSecrets: []

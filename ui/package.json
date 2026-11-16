@@ -16,6 +16,8 @@
     "@fortawesome/free-regular-svg-icons": "^6.4.0",
     "@fortawesome/free-solid-svg-icons": "^6.4.0",
     "@fortawesome/react-fontawesome": "^0.2.0",
+    "@grafana/faro-react": "^1.19.0",
+    "@grafana/faro-web-sdk": "^1.19.0",
     "@reduxjs/toolkit": "^1.9.5",
     "axios": "^1.4.0",
     "babel-plugin-macros": "^3.1.0",

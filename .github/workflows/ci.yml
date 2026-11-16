@@ -1,0 +1,153 @@
+name: ci
+
+# Build/push the martian-bank service images to ghcr.io/srclos-net and bump
+# the pinned tag in deploy/values-civo.yaml, which the Argo CD Application on
+# fe-stackgen-run syncs automatically (GitOps).
+#
+# Build contexts follow the upstream layout: the Python services COPY
+# protobufs/ from the repo root, so they build with context "." and
+# -f <service>/Dockerfile; the Node/nginx services are self-contained.
+#
+# Guard against loops: images tagged from a "[ci-auto]" commit are identical
+# to the previous run, so the guard step exits early on such commits.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          msg="$(git log -1 --format=%s)"
+          echo "last commit: $msg"
+          if echo "$msg" | grep -q '\[ci-auto\]'; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+  images:
+    runs-on: ubuntu-latest
+    needs: guard
+    if: needs.guard.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - { name: ui,            context: ./ui,            file: ./ui/Dockerfile }
+          - { name: nginx,         context: ./nginx,         file: ./nginx/Dockerfile }
+          - { name: dashboard,     context: .,               file: ./dashboard/Dockerfile }
+          - { name: accounts,      context: .,               file: ./accounts/Dockerfile }
+          - { name: loan,          context: .,               file: ./loan/Dockerfile }
+          - { name: transactions,  context: .,               file: ./transactions/Dockerfile }
+          - { name: customer-auth, context: ./customer-auth, file: ./customer-auth/Dockerfile }
+          - { name: atm-locator,   context: ./atm-locator,   file: ./atm-locator/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service.context }}
+          file: ${{ matrix.service.file }}
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ env.REGISTRY }}/srclos-net/martian-bank-demo-${{ matrix.service.name }}:sha-${{ needs.guard.outputs.sha }}
+          provenance: false
+          platforms: linux/amd64
+
+      - name: Make the package public (best effort, first push only)
+        if: github.event_name == 'push'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pkg="martian-bank-demo-${{ matrix.service.name }}"
+          curl -sf -X PATCH \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/orgs/srclos-net/packages/container/$pkg \
+            -d '{"visibility":"public"}' \
+            || echo "Could not flip $pkg to public - if anonymous pulls fail in the cluster, set it manually: https://github.com/orgs/srclos-net/packages/container/$pkg/settings"
+
+  bump-values:
+    runs-on: ubuntu-latest
+    needs: [guard, images]
+    if: needs.guard.outputs.build == 'true' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin the pushed image tag in deploy/values-civo.yaml
+        run: |
+          sha="${{ needs.guard.outputs.sha }}"
+          python3 - "$sha" <<'EOF'
+          import re, sys
+          p = "deploy/values-civo.yaml"
+          s = open(p).read()
+          sha = sys.argv[1]
+          if re.search(r"^  tag: ", s, flags=re.M):
+              s = re.sub(r"^(  tag: )\S*$", rf"\1sha-{sha}", s, flags=re.M)
+          else:
+              s = s.rstrip("\n") + f"\n\n# Pin the CI-built images (set by .github/workflows/ci.yml).\nimage:\n  repository: ghcr.io/srclos-net/martian-bank-demo\n  tag: sha-{sha}\n"
+          open(p, "w").write(s)
+          EOF
+          git diff --stat
+      - name: Commit and push the tag bump
+        run: |
+          sha="${{ needs.guard.outputs.sha }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
+          git add deploy/values-civo.yaml
+          git commit -m "[ci-auto] pin images to sha-${sha} [skip ci]" || echo "nothing to commit"
+          git push origin main
+
+  pr-build:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - { name: ui,            context: ./ui,            file: ./ui/Dockerfile }
+          - { name: nginx,         context: ./nginx,         file: ./nginx/Dockerfile }
+          - { name: dashboard,     context: .,               file: ./dashboard/Dockerfile }
+          - { name: accounts,      context: .,               file: ./accounts/Dockerfile }
+          - { name: loan,          context: .,               file: ./loan/Dockerfile }
+          - { name: transactions,  context: .,               file: ./transactions/Dockerfile }
+          - { name: customer-auth, context: ./customer-auth, file: ./customer-auth/Dockerfile }
+          - { name: atm-locator,   context: ./atm-locator,   file: ./atm-locator/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service.context }}
+          file: ${{ matrix.service.file }}
+          push: false
+          platforms: linux/amd64
