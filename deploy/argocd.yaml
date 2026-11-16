@@ -37,3 +37,9 @@ spec:
       name: martian-bank
       jsonPointers:
         - /metadata/annotations/traefik.ingress.kubernetes.io~1router.middlewares
+    - group: apps
+      kind: Deployment
+      name: bank-delayer
+      # the chaos latency dial (DELAY_MS env) is live-tuned, not git state
+      jsonPointers:
+        - /spec/template/spec/containers/0/env
