@@ -100,9 +100,11 @@ jobs:
           sha="${{ needs.guard.outputs.sha }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin main
+          # Commit BEFORE the rebase: the bump script leaves a modified file,
+          # and `git pull --rebase` refuses to run over unstaged changes.
           git add deploy/values-civo.yaml
           git commit -m "[ci-auto] pin images to sha-${sha} [skip ci]" || echo "nothing to commit"
+          git pull --rebase --autostash origin main
           git push origin main
 
   pr-build:
