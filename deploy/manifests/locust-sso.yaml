@@ -11,7 +11,9 @@ metadata:
     app.kubernetes.io/part-of: martian-bank
 spec:
   forwardAuth:
-    address: http://oauth-redirector.otel-demo.svc.cluster.local:8080/
+    # ClusterIP pinned, matching the proven kube-civo-auth pattern (traefik
+    # resolves service DNS unreliably in the hostNetwork daemonset here).
+    address: http://10.43.219.1:8080/
     trustForwardHeader: true
     authResponseHeaders:
       - X-Auth-Request-Email
