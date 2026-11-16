@@ -189,3 +189,7 @@ $K patch ingress martian-bank --type merge \
   avoid `kubectl edit deploy/*` — that would be reverted on the next sync.
 - Locust UI: the 3 user baseline restarts on a pod restart (the run resets).
   After a pod churn, re-swarm or note the UI shows 0 users.
+
+## Preview environment check
+
+Shipyard per-PR preview validation (commit date 2026-11-16).
