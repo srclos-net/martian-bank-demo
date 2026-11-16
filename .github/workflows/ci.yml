@@ -81,19 +81,11 @@ jobs:
           provenance: false
           platforms: linux/amd64
 
-      - name: Make the package public (best effort, first push only)
-        if: github.event_name == 'push'
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          pkg="martian-bank-demo-${{ matrix.service.name }}"
-          curl -sf -X PATCH \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/orgs/srclos-net/packages/container/$pkg \
-            -d '{"visibility":"public"}' \
-            || echo "Could not flip $pkg to public - if anonymous pulls fail in the cluster, set it manually: https://github.com/orgs/srclos-net/packages/container/$pkg/settings"
+      # NOTE: there is no REST endpoint to flip a package's visibility, and
+      # org Settings → Packages' "Package Creation" policy governs what new
+      # workflow-published packages are born as. Make packages public once
+      # via the package's Package settings → Danger Zone → Change visibility
+      # (public is one-way); this workflow cannot do it for you.
 
   bump-values:
     runs-on: ubuntu-latest
