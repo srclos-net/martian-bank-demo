@@ -102,7 +102,7 @@ kind: Service
 metadata:
     name: dashboard
 spec:
-    type: LoadBalancer
+    type: ClusterIP
     selector:
         app: dashboard
     ports:
@@ -140,11 +140,15 @@ spec:
                     {{- end }}
                       - name: NODE_ENV
                         value: production
-                      - name: PORT 
+                      - name: PORT
                         value: "8000"
-                  envFrom:
-                      - configMapRef:
-                          name: configmap-martianbank
+                  # JWT signing key comes from a pre-created Secret in the
+                  # namespace (see deploy/README.md) — never from this repo.
+                      - name: JWT_SECRET
+                        valueFrom:
+                          secretKeyRef:
+                            name: {{ .Values.jwt.existingSecret }}
+                            key: jwt_secret
 ---
 apiVersion: v1
 kind: Service
@@ -237,7 +241,7 @@ kind: Service
 metadata:
     name: nginx
 spec:
-    type: LoadBalancer
+    type: ClusterIP
     selector:
         app: nginx
     ports:

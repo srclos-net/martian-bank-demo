@@ -1,0 +1,32 @@
+# Overrides for the fe-stackgen-run Civo k3s cluster (deployed via Argo CD as https://bank.stackgen.run).
+replicaCount: 1
+
+SERVICE_PROTOCOL: http
+
+# In-cluster MongoDB (deployed by the chart when mongodb.enabled=false).
+DB_URL: "mongodb://root:example@mongodb:27017"
+
+# customer-auth signs JWTs with a key pulled from a Secret that is created
+# manually in the cluster (NOT in this repo — it is public). See deploy/README.md.
+jwt:
+  existingSecret: martianbank-jwt-secret
+
+mongodb:
+  enabled: false
+
+nginx:
+  enabled: true
+
+locust:
+  enabled: false
+
+# The chart's built-in ingress template targets a service name that doesn't
+# exist in this chart, so the real Ingress lives in deploy/manifests/.
+ingress:
+  enabled: false
+
+# NOTE: the chart templates ignore .Values.resources entirely, so no resource
+# requests can be set here — the workload runs unbounded (demo-grade).
+
+autoscaling:
+  enabled: false
