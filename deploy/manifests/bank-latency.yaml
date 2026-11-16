@@ -1,0 +1,107 @@
+# Latency-injection knob for bank.stackgen.run: a tiny HTTP service whose
+# only job is to sleep DELAY_MS before answering 200. Attached via the
+# bank-latency forwardAuth middleware, so every edge request pays the
+# round-trip: the "spinning wheel" act for the failure-playbook demo.
+#
+# Live dial (no restart, no detach):
+#   kubectl --context fe-stackgen-run -n martian-bank patch deploy bank-delayer \
+#     -p '{"spec":{"template":{"spec":{"containers":[{"name":"delayer","env":[{"name":"DELAY_MS","value":"2000"}]}]}}}}'
+#
+# NOTE: traefik 2.9.4 has no delay middleware (binary limitation, not CRD),
+# hence this pattern.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bank-delayer-script
+  labels:
+    app.kubernetes.io/name: bank-delayer
+data:
+  server.py: |
+    import os, time
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    PORT = int(os.getenv("PORT", "8080"))
+    DELAY = int(os.getenv("DELAY_MS", "0")) / 1000.0
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            time.sleep(DELAY)
+            self.send_response(200)
+            self.end_headers()
+
+        do_POST = do_GET
+        do_OPTIONS = do_GET
+        def log_message(self, *a):
+            pass
+
+    HTTPServer(("0.0.0.0", PORT), H).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bank-delayer
+  labels:
+    app.kubernetes.io/name: bank-delayer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bank-delayer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bank-delayer
+    spec:
+      containers:
+        - name: delayer
+          image: python:3.12-slim
+          command: ["python", "/app/server.py"]
+          env:
+            - name: DELAY_MS
+              value: "0"   # keep detached-at-rest default: 0 = invisible
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: script
+              mountPath: /app
+      volumes:
+        - name: script
+          configMap:
+            name: bank-delayer-script
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bank-delayer
+  labels:
+    app.kubernetes.io/name: bank-delayer
+spec:
+  selector:
+    app.kubernetes.io/name: bank-delayer
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: bank-latency
+  labels:
+    app.kubernetes.io/part-of: martian-bank
+spec:
+  # forwardAuth to the delayer: 200 passes, and every bank request waits
+  # DELAY_MS longer. Set DELAY_MS=0 on the deployment for a no-op knob.
+  forwardAuth:
+    address: http://bank-delayer.martian-bank.svc.cluster.local:8080
+    trustForwardHeader: true

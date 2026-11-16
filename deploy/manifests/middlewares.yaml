@@ -1,23 +1,10 @@
 # Runtime failure-injection knobs (Traefik 2.9.4, containo.us/v1alpha1).
-#
-# These middlewares are deployed INERT — they do nothing until attached to
-# the martian-bank Ingress by patching its
-# `traefik.ingress.kubernetes.io/router.middlewares` annotation at runtime.
-# See docs/failure-playbook.md for the exact flip commands.
-#
-# Scope: they sit at the edge for bank.stackgen.run only — all three can be
-# attached via a single annotation on that Ingress, without touching any app.
-apiVersion: traefik.containo.us/v1alpha1
-kind: Middleware
-metadata:
-  name: bank-delay
-  labels:
-    app.kubernetes.io/part-of: martian-bank
-spec:
-  # Injected latency for every request through the front door: the "spinning
-  # wheel" phase of the story. Faro web-vitals degrade accordingly.
-  delay:
-    milliseconds: 2000
+# Deployed INERT — attach at runtime by patching the martian-bank Ingress'
+# `traefik.ingress.kubernetes.io/router.middlewares` annotation; see
+# docs/failure-playbook.md for flip commands.
+# NOTE: latency injection lives in bank-latency.yaml (forwardAuth-delayer).
+# Traefik 2.9.4 has no delay middleware in the binary ("invalid middleware
+# type"), so that knob is not representable here.
 ---
 apiVersion: traefik.containo.us/v1alpha1
 kind: Middleware
