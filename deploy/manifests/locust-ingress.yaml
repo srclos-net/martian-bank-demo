@@ -1,0 +1,28 @@
+# The live demo knob that isn't knob-like: the Locust web UI, where the
+# virtual-user population is dialled up/down in a browser or via its HTTP API.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: locust-ui
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    external-dns.alpha.kubernetes.io/hostname: locust.stackgen.run
+    external-dns.alpha.kubernetes.io/target: 212.2.243.121
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: locust.stackgen.run
+      http:
+        paths:
+          - backend:
+              service:
+                name: locust
+                port:
+                  number: 8098
+            path: /
+            pathType: Prefix
+  tls:
+    - hosts:
+        - locust.stackgen.run
+      secretName: locust-tls

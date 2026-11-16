@@ -1,0 +1,45 @@
+# Runtime failure-injection knobs (Traefik 2.9.4, containo.us/v1alpha1).
+#
+# These middlewares are deployed INERT — they do nothing until attached to
+# the martian-bank Ingress by patching its
+# `traefik.ingress.kubernetes.io/router.middlewares` annotation at runtime.
+# See docs/failure-playbook.md for the exact flip commands.
+#
+# Scope: they sit at the edge for bank.stackgen.run only — all three can be
+# attached via a single annotation on that Ingress, without touching any app.
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: bank-delay
+  labels:
+    app.kubernetes.io/part-of: martian-bank
+spec:
+  # Injected latency for every request through the front door: the "spinning
+  # wheel" phase of the story. Faro web-vitals degrade accordingly.
+  delay:
+    milliseconds: 2000
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: bank-ratelimit
+  labels:
+    app.kubernetes.io/part-of: martian-bank
+spec:
+  # 5 req/s average, bursts of 10: beyond that customers get 429s.
+  rateLimit:
+    average: 5
+    burst: 10
+    period: 1s
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: bank-circuitbreaker
+  labels:
+    app.kubernetes.io/part-of: martian-bank
+spec:
+  # Passive: trips during storms by itself (3xx errors / slow 50th pct).
+  # Attach only when you want the edge to start shedding load on its own.
+  circuitBreaker:
+    expression: NetworkErrorRatio() > 0.30 || LatencyAtQuantileMS(50) > 1500
