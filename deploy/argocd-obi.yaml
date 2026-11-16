@@ -1,0 +1,28 @@
+# Argo CD Application: OBI (OpenTelemetry eBPF Instrumentation) in devopsnow.
+#
+# Owns everything OBI-related (see deploy/obi/): ClusterRole/Binding, SA,
+# obi-config ConfigMap, obi DaemonSet. Previously these were hand-kubectl-
+# applied; the Application adopts them (live state was brought to match git
+# by hand-applying these manifests first, then applying this Application).
+#
+# NOT part of the martian-bank Application on purpose: the obi stack is
+# cluster observability shared with other workloads, not bank-owned.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: obi
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/srclos-net/martian-bank-demo.git
+    targetRevision: main
+    path: deploy/obi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: devopsnow
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    # devopsnow already exists; never let Argo create it.
