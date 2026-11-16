@@ -284,6 +284,22 @@ spec:
                       value: http://dashboard:5000/transaction
                     - name: VITE_LOAN_URL
                       value: http://dashboard:5000/loan
+                  {{- if .Values.locust.alwaysOn }}
+                  # Continuous virtual users: override the upstream
+                  # "sleep infinity" entrypoint with an autostarted run that
+                  # combines all five flows and keeps the web UI on 8089.
+                  command: ["locust"]
+                  args:
+                    - -f
+                    - /service/auth_locust.py,/service/atm_locust.py,/service/account_locust.py,/service/transaction_locust.py,/service/loan_locust.py
+                    - --autostart
+                    - -u
+                    - "{{ .Values.locust.users }}"
+                    - -r
+                    - "0.5"
+                  ports:
+                    - containerPort: 8089
+                  {{- end }}
 ---
 apiVersion: v1
 kind: Service

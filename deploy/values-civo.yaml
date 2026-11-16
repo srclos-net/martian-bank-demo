@@ -18,7 +18,9 @@ nginx:
   enabled: true
 
 locust:
-  enabled: false
+  enabled: true
+  alwaysOn: true
+  users: 3
 
 # The chart's built-in ingress template targets a service name that doesn't
 # exist in this chart, so the real Ingress lives in deploy/manifests/.
