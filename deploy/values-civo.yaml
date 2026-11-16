@@ -36,4 +36,4 @@ autoscaling:
 # Pin the CI-built images (set by .github/workflows/ci.yml).
 image:
   repository: ghcr.io/srclos-net/martian-bank-demo
-  tag: sha-4f55533
+  tag: sha-31e1e1c
