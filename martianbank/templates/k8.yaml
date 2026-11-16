@@ -291,7 +291,7 @@ spec:
                   command: ["locust"]
                   args:
                     - -f
-                    - /service/auth_locust.py,/service/atm_locust.py,/service/account_locust.py,/service/transaction_locust.py,/service/loan_locust.py
+                    - /service/bank_locust.py
                     - --autostart
                     - -u
                     - "{{ .Values.locust.users }}"
