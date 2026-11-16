@@ -108,6 +108,23 @@ jobs:
           git pull --rebase --autostash origin main
           git push origin main
 
+  shipyard-preview:
+    # Per-PR ephemeral environment built by Shipyard from the repo's
+    # docker-compose.yaml (repo must have a matching Application in the
+    # Shipyard org). Green-with-warning until the SHIPYARD_API_TOKEN
+    # repo secret exists. Shipyard does NOT push images: these are
+    # throwaway preview stacks, not production artifacts.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for the Shipyard preview environment
+        continue-on-error: true
+        uses: shipyard/shipyard-action@1.0.0
+        with:
+          api-token: ${{ secrets.SHIPYARD_API_TOKEN }}
+          timeout-minutes: 60
+
   pr-build:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'

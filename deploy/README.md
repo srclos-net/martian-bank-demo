@@ -4,8 +4,25 @@ https://bank.stackgen.run
 
 The `martian-bank` Argo CD Application (`argocd.yaml`) manages everything in
 namespace `martian-bank` from `main`: the `martianbank` Helm chart (with
-`values-civo.yaml`) plus the raw Ingress in `manifests/`. Argo CD auto-syncs
-(self-heal + prune), so changes land after `git push` to `main`.
+`values-civo.yaml`) plus the raw manifests in `manifests/` (Ingress, locust
+UI ingress + SSO middleware, failure-injection middlewares). Argo CD
+auto-syncs (self-heal + prune), so changes land after `git push` to `main`.
+
+## Who builds what
+
+- **Production images (GitHub Actions, `.github/workflows/ci.yml`):** every
+  push to `main` builds the 8 service images + locust and pushes
+  `ghcr.io/srclos-net/martian-bank-demo-<svc>:sha-<short>`, then a
+  `[ci-auto]` commit pins the tag in `deploy/values-civo.yaml` for Argo CD.
+  PRs build without pushing. GHCR packages are PUBLIC (flipped manually
+  once — no API to change visibility).
+- **PR previews (Shipyard, `shipyard-preview` job):** Shipyard builds the
+  repo's `docker-compose.yaml` into an ephemeral per-PR environment and
+  hands back a live preview URL (requires the `SHIPYARD_API_TOKEN` repo
+  secret and a matching Application in the Shipyard org). Shipyard does
+  NOT push images — its builds live inside its throwaway environments.
+- **Argo CD** pulls only from GHCR: the CI images are the source of truth
+  for what runs at bank.stackgen.run.
 
 ## Manual prerequisite (created out-of-band on purpose)
 
