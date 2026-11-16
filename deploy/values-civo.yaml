@@ -30,3 +30,8 @@ ingress:
 
 autoscaling:
   enabled: false
+
+# Pin the CI-built images (set by .github/workflows/ci.yml).
+image:
+  repository: ghcr.io/srclos-net/martian-bank-demo
+  tag: sha-b995a42
