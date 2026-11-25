@@ -46,6 +46,7 @@ capacity:
   locust:        {requests: {cpu: 100m, memory: 256Mi}, limits: {cpu: "2", memory: 1Gi}}
   mongodb:       {requests: {cpu: 100m, memory: 256Mi}, limits: {cpu: "2", memory: 1Gi}}
   # >>> booth:customer-auth-capacity
+  customer-auth: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: "1", memory: 384Mi}}
   # <<< booth:customer-auth-capacity
 
 autoscaling:
