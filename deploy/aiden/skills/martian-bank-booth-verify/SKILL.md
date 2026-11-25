@@ -10,11 +10,11 @@ unchanged. No other tools.
 
 **V1: login p95 (s)**
 ```
-histogram_quantile(0.95, sum by (le) (rate(traces_span_metrics_duration_milliseconds_bucket{job="martian-bank/customer-auth", span_name="POST /api/users/auth", span_kind="SPAN_KIND_SERVER"}[2m]))) / 1000
+histogram_quantile(0.95, sum by (le) (rate(traces_span_metrics_duration_milliseconds_bucket{job="martian-bank/customer-auth", span_name="POST /api/users/auth", span_kind="SPAN_KIND_SERVER"}[1m]))) / 1000
 ```
 **V2: throttling %**
 ```
-100 * sum(rate(container_cpu_cfs_throttled_periods_total{namespace="martian-bank", container="customer-auth"}[2m])) / sum(rate(container_cpu_cfs_periods_total{namespace="martian-bank", container="customer-auth"}[2m]))
+100 * sum(rate(container_cpu_cfs_throttled_periods_total{namespace="martian-bank", container="customer-auth"}[1m])) / sum(rate(container_cpu_cfs_periods_total{namespace="martian-bank", container="customer-auth"}[1m]))
 ```
 **V3: customer-auth CPU limit and memory limit in MiB (ready pod)**
 ```
@@ -29,7 +29,7 @@ max by (resource) (kube_pod_container_resource_limits{namespace="martian-bank", 
 
 VERIFIED only if all of these hold: V1 < 1.5 s, V2 < 25 %, the CPU limit is ≥ 0.25 core AND a memory limit exists
 (capacity now comes from Git), and the alert isn't firing. Otherwise NOT VERIFIED, saying which check failed.
-Spans arrive about 30–60 s after the sync, so if V1 has no data yet, say "wait 60 s and re-run".
+Spans arrive about 30–60 s after the sync, so if V1 has no data yet, say "wait 60 s and re-run". The queries use a 1-minute window so pre-fix logins age out quickly.
 
 ## Report: exactly this shape
 

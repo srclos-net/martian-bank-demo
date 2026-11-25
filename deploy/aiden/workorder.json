@@ -5,19 +5,19 @@
   "steps": [
     {
       "kind": "look",
-      "text": "InfraOps: read the drift and policy report for customer-auth (live CPU limit 200m set by kubectl-patch, not in Git; CAP-001/002/003)."
+      "text": "InfraOps: read the drift and policy report for customer-auth (live CPU limit 200m set by kubectl-patch, not in Git; CAP-001/002/003). InfraOps scan: https://github.com/srclos-net/martian-bank-demo/tree/main/deploy/infraops \u00b7 policy: https://github.com/srclos-net/martian-bank-demo/blob/main/policy/capacity.rego"
     },
     {
       "kind": "act",
-      "text": "InfraOps: open the reconcile PR declaring customer-auth capacity in Git (requests 100m/128Mi, limits 1 CPU/384Mi)."
+      "text": "InfraOps: open the reconcile PR declaring customer-auth capacity in Git (requests 100m/128Mi, limits 1 CPU/384Mi). InfraOps PRs: https://github.com/srclos-net/martian-bank-demo/pulls?q=is%3Apr+head%3Ainfraops%2F"
     },
     {
       "kind": "act",
-      "text": "DevOps: merge the PR after the capacity policy gate passes; Argo CD syncs customer-auth from Git."
+      "text": "DevOps: merge the PR after the capacity policy gate passes; Argo CD syncs customer-auth from Git. Policy gate runs: https://github.com/srclos-net/martian-bank-demo/actions \u00b7 Argo CD: https://argocd.stackgen.run/applications/argocd/martian-bank"
     },
     {
       "kind": "check",
-      "text": "Aiden for SRE: login p95 under 1.5 s, CPU throttling under 25 %, customer-auth capacity owned by Git, login alert resolved."
+      "text": "Aiden for SRE: login p95 under 1.5 s, CPU throttling under 25 %, customer-auth capacity owned by Git, login alert resolved. Booth dashboard: https://stephgen-medussa.observe.devopsnow.cloud/d/martian-bank-booth?orgId=6"
     }
   ]
 }
