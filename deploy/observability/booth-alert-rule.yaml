@@ -1,0 +1,71 @@
+# re:Invent booth alert (docs/reinvent/), exported from stephgen-medussa
+# (ObserveNow) folder uid `martian-bank-booth`. Routed by the default
+# notification policy to contact point "fe-stackgen-run -> Aiden (StackGen
+# Incidents)" -> Incidents integration "fe-stackgen-run (ObserveNow)".
+# Re-create: PUT /api/v1/provisioning/folder/martian-bank-booth/rule-groups/martian-bank-booth
+# Calibration (2026-11-25, same pinned load): armed 200m -> p95 ~6-7 s,
+# armed + calm -> ~2 s, declared 1 CPU -> ~0.5 s. Threshold 4 s.
+apiVersion: 1
+groups:
+    - orgId: 1
+      name: martian-bank-booth
+      folder: martian-bank-booth
+      interval: 20s
+      rules:
+        - uid: martian-bank-login-slow
+          title: 'Martian Bank: customer logins slow (customer-auth p95 > 4s)'
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 300
+                to: 0
+              datasourceUid: metrics
+              model:
+                expr: histogram_quantile(0.95, sum by (le) (rate(traces_span_metrics_duration_milliseconds_bucket{job="martian-bank/customer-auth", span_name="POST /api/users/auth", span_kind="SPAN_KIND_SERVER"}[1m]))) / 1000
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: A
+            - refId: B
+              datasourceUid: __expr__
+              model:
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                reducer: last
+                refId: B
+                settings:
+                    mode: dropNN
+                type: reduce
+            - refId: C
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 4
+                        type: gt
+                expression: B
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          dashboardUid: martian-bank-booth
+          panelId: 2
+          noDataState: OK
+          execErrState: OK
+          for: 30s
+          annotations:
+            __dashboardUid__: martian-bank-booth
+            __panelId__: "2"
+            description: Login latency on customer-auth (POST /api/users/auth) is above the 4 s customer SLO. Check customer-auth CPU throttling and its live resources vs Git (deploy/values-civo.yaml). Argo CD only diffs fields Git declares.
+            runbook_url: https://github.com/srclos-net/martian-bank-demo/blob/main/docs/reinvent/RUNBOOK.md
+            summary: Martian Bank customers wait more than 4 s to log in (customer-auth p95 {{ humanize $values.B.Value }}s)
+          labels:
+            cluster: fe-stackgen-run
+            demo: reinvent-booth
+            namespace: martian-bank
+            service: customer-auth
+            severity: critical
+          isPaused: false

@@ -6,7 +6,7 @@ Everything runs in the `martian-bank` namespace on fe-stackgen-run, so there's n
 ## The premise (verified on the live cluster 2026-11-25)
 
 The Martian Bank Helm chart never declares CPU/memory resources. During a past "noisy neighbor" scare, someone
-**hot-patched a 50m CPU limit onto `customer-auth` with kubectl**. Because Git never declared that field, **Argo CD still
+**hot-patched a 200m CPU limit onto `customer-auth` with kubectl**. Because Git never declared that field, **Argo CD still
 shows Synced / Healthy**. This was tested live: a patched limit doesn't flip the app OutOfSync, and self-heal never
 reverts it. The undeclared change is the **outage** (login CPU-throttled under load), the **drift** (live ≠ Git), and
 the **policy violation** (tier-1 services must declare requests/limits in Git) all at once.
@@ -20,7 +20,7 @@ The outcome is fixed. Pacing and narration belong to the presenter.
 
 | Beat | Pinned input | Identical every run |
 |------|--------------|---------------------|
-| Failure | `booth arm`: exactly `limits.cpu=50m` on customer-auth, nothing else | the root cause, the live object, and a `kubectl-patch` managedFields entry |
+| Failure | `booth arm`: exactly `limits.cpu=200m` on customer-auth, nothing else | the root cause, the live object, and a `kubectl-patch` managedFields entry |
 | Load | `booth blackfriday`: Locust 30 users, spawn rate 5, the same 5 flow files | the same latency curve (thresholds tuned in rehearsal so the alert always fires within ~60 s) |
 | Alert | one alert rule on customer-auth p95 + CPU throttling, fixed threshold and `for:` | fires on every run, never at 3 users |
 | SRE (Aiden) | workflow with fixed steps: named PromQL queries, a fixed Git file to compare, a structured output template (cause / evidence / hand-off) | the same root cause, the same 3 evidence lines, the same hand-off |
@@ -31,7 +31,7 @@ The outcome is fixed. Pacing and narration belong to the presenter.
 
 **Live LLM variance:** Aiden's run is constrained (fixed tools and queries, output template, low temperature
 where the workspace allows it). `booth check-rca` compares Aiden's answer against the golden one (root cause =
-customer-auth CPU limit 50m, not in Git). A **recorded golden run** (screenshots + transcript) is the fallback: if
+customer-auth CPU limit 200m, not in Git). A **recorded golden run** (screenshots + transcript) is the fallback: if
 the live run is slow or off-script, the presenter switches tabs without changing the story.
 
 **Presenter flexibility (doesn't change the outcome):** a short (2 min) or full (5–8 min) cut; optional detours
@@ -45,7 +45,7 @@ read-only side trips that never mutate state.
 |---|------|---------|-----------|------------------------|
 | 1 | 0:00–0:45 | — | Booth dashboard (green) + Argo CD showing **Synced / Healthy** + the bank in a browser | "A real bank: 11 microservices, fully GitOps. Argo says everything matches Git. It's Black Friday on Mars." |
 | 2 | 0:45–1:30 | — | `booth blackfriday`: Locust 3 → 30 users; login p95 climbs from 0.2 s to seconds; logging in spins in the browser | "Customers are piling in, and logins are crawling. Argo is still green." |
-| 3 | 1:30–3:00 | **SRE (Aiden)** | Alert → incident → Aiden investigation | Aiden finds that only customer-auth is slow (spanmetrics); its downstream mongo is fine; the pod is CPU-throttled (cAdvisor throttling metric); and the deployment's managedFields show a `kubectl-patch` manager, not argocd-controller, setting `limits.cpu=50m`. **Root cause: an out-of-band change Git never knew about.** Hand-off → InfraOps. |
+| 3 | 1:30–3:00 | **SRE (Aiden)** | Alert → incident → Aiden investigation | Aiden finds that only customer-auth is slow (spanmetrics); its downstream mongo is fine; the pod is CPU-throttled (cAdvisor throttling metric); and the deployment's managedFields show a `kubectl-patch` manager, not argocd-controller, setting `limits.cpu=200m`. **Root cause: an out-of-band change Git never knew about.** Hand-off → InfraOps. |
 | 4 | 3:00–4:15 | **InfraOps** | Drift report (live vs rendered Git) + policy findings | Drift: customer-auth has resources Git doesn't declare. Policy: "tier-1 workloads must declare requests/limits in Git" fails for **all 11 services** (the real chart gap), and "CPU limit ≥ 250m for tier-1" fails live. InfraOps opens the PR "Declare martian-bank capacity in Git": the chart renders `resources` and the values set sane requests/limits. Hand-off → DevOps. |
 | 5 | 4:15–5:45 | **DevOps** | PR checks: helm render, **policy gate (Rego/conftest) green** (the same gate is red on `main`), Shipyard preview env, merge → Argo syncs within seconds | "The fix goes through the same pipeline as code, and the policy is checked before it ships. No one touches kubectl." |
 | 6 | 5:45–6:45 | **SRE (Aiden)** | Login p95 back to baseline (annotations mark each hand-off), drift = 0, policy compliant; Aiden resolves the incident with a postmortem timeline | "Aiden checks the fix actually worked and writes the postmortem." |
@@ -62,7 +62,7 @@ covers the time while the live run resets.
 1. Locust back to 3 users.
 2. Restore the baseline Git state: a `[booth-reset] [skip ci]` commit returns `deploy/booth/` values to the pre-fix
    state. This is unavoidable: once the fix is in Git, Argo would self-heal away the next hot-patch.
-3. Force an Argo refresh, then re-arm: kubectl-patch the 50m limit back onto customer-auth.
+3. Force an Argo refresh, then re-arm: kubectl-patch the 200m limit back onto customer-auth.
 4. Resolve/close the demo incident.
 
 ## Build list

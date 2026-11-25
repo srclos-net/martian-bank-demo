@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# re:Invent booth driver for the Martian Bank outer-loop demo (docs/reinvent/).
+#
+#   booth status        assert the exact start state (exit 1 + reasons if not)
+#   booth arm           the "hot-fix": kubectl-patch customer-auth limits.cpu=200m
+#   booth blackfriday   Locust -> 30 users + the pinned login rush  [the incident]
+#   booth calm          Locust -> 3 users, login rush stopped (baseline)
+#   booth login         time 3 real customer logins through https://bank.stackgen.run
+#   booth infraops      run the InfraOps scan (drift + policy + reconcile PR)
+#   booth sync          make Argo CD pick up main now and wait for customer-auth
+#   booth reset         back to the start state: calm, close PRs, baseline Git,
+#                       sync, re-arm, assert                  (~2 min)
+#
+# Deterministic by design: every input is pinned below. Change them only
+# together with the rehearsal numbers in docs/reinvent/RUNBOOK.md.
+set -euo pipefail
+
+CTX="${BOOTH_CONTEXT:-fe-stackgen-run}"
+NS=martian-bank
+REPO=srclos-net/martian-bank-demo
+ARM_CPU=200m                # the out-of-band limit (root cause; < the 250m policy floor)
+RUSH="$(dirname "$0")/login-rush.yaml"   # pinned login load (3 workers, real bcrypt logins)
+STORM_USERS=30; STORM_RATE=5
+CALM_USERS=3;   CALM_RATE=1
+CACHE="${BOOTH_CACHE:-$HOME/.cache/martian-booth}"
+KUBECTL="${KUBECTL:-/opt/homebrew/bin/kubectl}"
+[ -x "$KUBECTL" ] || KUBECTL=kubectl
+k() { "$KUBECTL" --context "$CTX" -n "$NS" "$@"; }
+ka() { "$KUBECTL" --context "$CTX" -n argocd "$@"; }
+say() { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
+die() { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- locust
+locust() { # locust <users> <rate>
+  local port=18098 pf
+  "$KUBECTL" --context "$CTX" -n "$NS" port-forward svc/locust "$port:8098" >/dev/null 2>&1 & pf=$!
+  trap 'kill $pf 2>/dev/null || true' RETURN
+  for _ in $(seq 1 25); do curl -s -o /dev/null "http://localhost:$port/" && break; sleep 0.2; done
+  curl -s -f -X POST "http://localhost:$port/swarm" -d "user_count=$1" -d "spawn_rate=$2" >/dev/null \
+    || die "locust swarm call failed"
+  say "Locust -> $1 users (spawn $2/s)"
+}
+locust_users() {
+  local port=18099 pf n
+  "$KUBECTL" --context "$CTX" -n "$NS" port-forward svc/locust "$port:8098" >/dev/null 2>&1 & pf=$!
+  for _ in $(seq 1 25); do curl -s -o /dev/null "http://localhost:$port/" && break; sleep 0.2; done
+  n=$(curl -s "http://localhost:$port/stats/requests" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("user_count","?"))' 2>/dev/null || echo "?")
+  kill $pf 2>/dev/null || true
+  echo "$n"
+}
+
+# ---------------------------------------------------------------- git (cache clone)
+repo() {
+  if [ ! -d "$CACHE/.git" ]; then git clone -q "git@github.com:$REPO.git" "$CACHE"; fi
+  git -C "$CACHE" fetch -q origin main && git -C "$CACHE" reset -q --hard origin/main
+}
+baseline_block() { # print the customer-auth booth block from a values file
+  sed -n '/# >>> booth:customer-auth-capacity/,/# <<< booth:customer-auth-capacity/p' "$1"
+}
+
+# ---------------------------------------------------------------- argo
+sync() {
+  local want; repo; want=$(git -C "$CACHE" rev-parse HEAD)
+  ka annotate application martian-bank argocd.argoproj.io/refresh=normal --overwrite >/dev/null
+  say "Argo CD: waiting to sync $want"
+  for _ in $(seq 1 60); do
+    read -r st rev < <(ka get application martian-bank -o jsonpath='{.status.sync.status} {.status.sync.revisions[0]}{.status.sync.revision}' 2>/dev/null; echo)
+    [ "$st" = Synced ] && [[ "$rev" == "$want"* ]] && break
+    sleep 3
+  done
+  [ "$st" = Synced ] && [[ "$rev" == "$want"* ]] || die "Argo did not reach Synced@$want (is $st@$rev)"
+  k rollout status deploy/customer-auth --timeout=180s >/dev/null
+  say "Argo CD Synced @ ${want:0:7}, customer-auth rolled out"
+}
+
+# ---------------------------------------------------------------- infraops job
+infraops_job() { # infraops_job <MODE>
+  local name="infraops-$(echo "$1" | tr -c 'a-z\n' '-')$(date +%s)"
+  k create job "$name" --from=cronjob/infraops-scan --dry-run=client -o json \
+    | python3 -c "
+import sys,json; j=json.load(sys.stdin)
+for c in j['spec']['template']['spec']['containers']:
+    for e in c['env']:
+        if e['name']=='MODE': e['value']='$1'
+print(json.dumps(j))" | k apply -f - >/dev/null
+  k wait --for=condition=complete "job/$name" --timeout=180s >/dev/null 2>&1 \
+    || { k logs "job/$name" -c scan --tail=40; die "InfraOps job $name failed"; }
+  k logs "job/$name" -c scan | grep -v '^{'
+}
+
+serving() { # wait until customer-auth answers through the real edge (no readiness probe in the chart)
+  for _ in $(seq 1 60); do
+    [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST https://bank.stackgen.run/api/users/auth \
+        -H 'Content-Type: application/json' -d '{}')" = 400 ] && return 0
+    sleep 3
+  done
+  die "customer-auth not serving after 3 min"
+}
+
+# ---------------------------------------------------------------- status
+status() {
+  local bad=0 lim req users block prs
+  lim=$(k get deploy customer-auth -o jsonpath='{.spec.template.spec.containers[0].resources.limits.cpu}')
+  req=$(k get deploy customer-auth -o jsonpath='{.spec.template.spec.containers[0].resources.requests.memory}')
+  users=$(locust_users)
+  repo; block=$(baseline_block "$CACHE/deploy/values-civo.yaml" | wc -l | tr -d ' ')
+  read -r st health < <(ka get application martian-bank -o jsonpath='{.status.sync.status} {.status.health.status}'; echo)
+  prs=$(curl -s "https://api.github.com/repos/$REPO/pulls?state=open&per_page=50" \
+        | python3 -c 'import sys,json;print(sum(p["head"]["ref"].startswith("infraops/") for p in json.load(sys.stdin)))' 2>/dev/null || echo "?")
+  chk() { if [ "$2" = "$3" ]; then printf '  ✓ %-38s %s\n' "$1" "$2"; else printf '  ✗ %-38s %s (want %s)\n' "$1" "$2" "$3"; bad=1; fi; }
+  echo "Booth start state:"
+  chk "customer-auth live CPU limit (armed)" "${lim:-none}" "$ARM_CPU"
+  chk "customer-auth memory request (undeclared)" "${req:-none}" "none"
+  chk "Git capacity block for customer-auth" "$block lines" "2 lines"
+  chk "Argo CD sync/health (the blind spot)" "$st/$health" "Synced/Healthy"
+  chk "Locust virtual users" "$users" "$CALM_USERS"
+  chk "login rush running" "$(k get job booth-login-rush -o name 2>/dev/null | wc -l | tr -d ' ')" "0"
+  chk "open InfraOps PRs" "$prs" "0"
+  [ $bad = 0 ] && say "READY: exact start state" || die "NOT at the start state: run 'booth reset'"
+}
+
+case "${1:-help}" in
+  status) status ;;
+  arm)
+    # replace the whole resources object: exactly limits.cpu, nothing else
+    [ "$(k get deploy customer-auth -o jsonpath='{.spec.template.spec.containers[0].name}')" = customer-auth ] \
+      || die "unexpected container layout in customer-auth"
+    k patch deploy customer-auth --type json \
+      -p "[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/resources\",\"value\":{\"limits\":{\"cpu\":\"$ARM_CPU\"}}}]" >/dev/null
+    k rollout status deploy/customer-auth --timeout=120s >/dev/null
+    serving
+    say "armed: customer-auth limits.cpu=$ARM_CPU (out of band; Argo stays Synced)" ;;
+  blackfriday)
+    locust "$STORM_USERS" "$STORM_RATE"
+    k delete job booth-login-rush --ignore-not-found --wait=true >/dev/null
+    k apply -f "$RUSH" >/dev/null
+    say "login rush started (3 workers; watch: kubectl -n $NS logs -f job/booth-login-rush)" ;;
+  calm)
+    k delete job booth-login-rush --ignore-not-found >/dev/null
+    locust "$CALM_USERS" "$CALM_RATE" ;;
+  login)
+    for _ in 1 2 3; do
+      curl -s -o /dev/null -m 60 -w "  login %{http_code} in %{time_total}s\n" -X POST https://bank.stackgen.run/api/users/auth \
+        -H 'Content-Type: application/json' -d '{"email":"booth-visitor@martian.bank","password":"reinvent-1738"}'
+    done ;;
+  infraops) infraops_job scan-pr ;;
+  sync) sync ;;
+  reset)
+    "$0" calm
+    if k get secret infraops-github >/dev/null 2>&1; then infraops_job close-prs; fi
+    repo
+    python3 - "$CACHE/deploy/values-civo.yaml" <<'EOF'
+import sys
+p=sys.argv[1]; L=open(p).read().split("\n")
+s=next(i for i,l in enumerate(L) if "# >>> booth:customer-auth-capacity" in l)
+e=next(i for i,l in enumerate(L) if "# <<< booth:customer-auth-capacity" in l)
+L[s+1:e]=[]; open(p,"w").write("\n".join(L))
+EOF
+    if ! git -C "$CACHE" diff --quiet; then
+      git -C "$CACHE" commit -q -am "[booth-reset] restore baseline: customer-auth capacity undeclared [skip ci]"
+      git -C "$CACHE" push -q origin HEAD:main
+      say "Git: baseline restored ($(git -C "$CACHE" rev-parse --short HEAD))"
+    else
+      say "Git: already at baseline"
+    fi
+    sync
+    "$0" arm
+    k get jobs -o name | grep "^job.batch/infraops-" | xargs -r "$KUBECTL" --context "$CTX" -n "$NS" delete >/dev/null 2>&1 || true
+    k delete configmap infraops-report --ignore-not-found >/dev/null
+    status ;;
+  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac
