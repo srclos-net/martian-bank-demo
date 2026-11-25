@@ -194,14 +194,19 @@ elif cmd == "verify":
     # Pre-check the same numbers Aiden will judge (org 6 viewer key), so the recorded check never fails on timing:
     # spans and the 1-minute windows need ~1-2 min after the sync to show the fixed pod only.
     vk = open(os.path.expanduser("~/.config/aiden/reinvent-onow-viewer.key")).read().strip()
-    def q(expr):
-        body = {"queries": [{"refId": "A", "datasource": {"uid": "metrics"}, "expr": expr, "instant": True}], "from": "now-5m", "to": "now"}
+    import importlib.util
+    qs = importlib.util.spec_from_file_location("q", os.path.join(HERE, "..", "o11y", "org6", "queries.py"))
+    Q = importlib.util.module_from_spec(qs); qs.loader.exec_module(Q)
+
+    def q(sql):   # the same SQL Aiden's verify skill runs, through org 6's ClickHouse datasource
+        body = {"queries": [{"refId": "A", "datasource": {"uid": "clickhouse", "type": "grafana-clickhouse-datasource"},
+                             "rawSql": sql, "format": 1, "queryType": "table"}], "from": "now-5m", "to": "now"}
         r = urllib.request.Request("https://stephgen-medussa.observe.devopsnow.cloud/api/ds/query", data=json.dumps(body).encode(),
                                    headers={"Authorization": f"Bearer {vk}", "Content-Type": "application/json"}, method="POST")
         f = json.load(urllib.request.urlopen(r, timeout=30))["results"]["A"].get("frames") or []
-        return f[0]["data"]["values"][1][0] if f and f[0]["data"]["values"] else None
-    P95 = 'histogram_quantile(0.95, sum by (le) (rate(traces_span_metrics_duration_milliseconds_bucket{job="martian-bank/customer-auth", span_name="POST /api/users/auth", span_kind="SPAN_KIND_SERVER"}[1m]))) / 1000'
-    THR = '100 * sum(rate(container_cpu_cfs_throttled_periods_total{namespace="martian-bank", container="customer-auth"}[1m])) / sum(rate(container_cpu_cfs_periods_total{namespace="martian-bank", container="customer-auth"}[1m]))'
+        return f[0]["data"]["values"][0][0] if f and f[0]["data"]["values"] and f[0]["data"]["values"][0] else None
+    P95 = Q.LOGIN_P95_1M
+    THR = Q.THROTTLE_PCT_2M.replace("INTERVAL 2 MINUTE", "INTERVAL 1 MINUTE")
     for i in range(24):
         p95, thr = q(P95), q(THR)
         if p95 is not None and p95 < 1.5 and (thr or 0) < 25:

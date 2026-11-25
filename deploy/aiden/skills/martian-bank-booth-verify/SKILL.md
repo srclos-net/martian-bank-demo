@@ -1,35 +1,50 @@
 ---
 name: martian-bank-booth-verify
-description: Verify the Martian Bank login fix after the InfraOps PR shipped. Four fixed ObserveNow queries and a fixed VERIFIED / NOT VERIFIED verdict.
+description: Verify the Martian Bank login fix after the InfraOps PR shipped. Three fixed ClickHouse queries plus the firing-alert check, and a fixed VERIFIED / NOT VERIFIED verdict.
 ---
 
 # Verify the customer-auth capacity fix
 
-Run these four queries with `observability_query` (datasource uid `metrics`, instant, `now`), in order and
-unchanged. No other tools.
+Run these queries with `observability_query` (datasource uid `clickhouse`, database `otel`), in order and
+unchanged. No other tools except `list_firing_alerts`.
 
-**V1: login p95 (s)**
+**V1: login p95 (s), last minute**
+```sql
+SELECT round(quantile(0.95)(Duration) / 1e9, 2) AS login_p95_s
+FROM otel.otel_traces
+WHERE ServiceName = 'customer-auth' AND SpanName = 'POST /api/users/auth' AND SpanKind = 'Server'
+  AND Timestamp > now() - INTERVAL 1 MINUTE
 ```
-histogram_quantile(0.95, sum by (le) (rate(traces_span_metrics_duration_milliseconds_bucket{job="martian-bank/customer-auth", span_name="POST /api/users/auth", span_kind="SPAN_KIND_SERVER"}[1m]))) / 1000
+
+**V2: customer-auth throttling %, last minute**
+```sql
+SELECT round(100 * sumIf(d, m = 'container_cpu_cfs_throttled_periods_total')
+                       / nullIf(sumIf(d, m = 'container_cpu_cfs_periods_total'), 0), 1) AS throttled_pct
+FROM (SELECT MetricName AS m, Attributes['id'] AS id, max(Value) - min(Value) AS d
+      FROM otel.otel_metrics_sum
+      WHERE MetricName IN ('container_cpu_cfs_throttled_periods_total', 'container_cpu_cfs_periods_total')
+        AND Attributes['container'] = 'customer-auth' AND TimeUnix > now() - INTERVAL 1 MINUTE
+      GROUP BY m, id)
 ```
-**V2: throttling %**
+
+**V3: customer-auth CPU limit (cores) and memory limit (MiB)**
+```sql
+SELECT maxIf(v, resource = 'cpu') AS cpu_limit_cores,
+       maxIf(v, resource = 'memory') / 1048576 AS memory_limit_mib
+FROM (SELECT Attributes['resource'] AS resource, argMax(Value, TimeUnix) AS v
+      FROM otel.otel_metrics_gauge
+      WHERE MetricName = 'kube_pod_container_resource_limits' AND Attributes['container'] = 'customer-auth'
+        AND TimeUnix > now() - INTERVAL 1 MINUTE
+      GROUP BY resource)
 ```
-100 * sum(rate(container_cpu_cfs_throttled_periods_total{namespace="martian-bank", container="customer-auth"}[1m])) / sum(rate(container_cpu_cfs_periods_total{namespace="martian-bank", container="customer-auth"}[1m]))
-```
-**V3: customer-auth CPU limit and memory limit in MiB (ready pod)**
-```
-max by (resource) (kube_pod_container_resource_limits{namespace="martian-bank", container="customer-auth", resource="cpu"} * on (namespace, pod) group_left () max by (namespace, pod) (kube_pod_status_ready{namespace="martian-bank", condition="true"}))
-```
-```
-max by (resource) (kube_pod_container_resource_limits{namespace="martian-bank", container="customer-auth", resource="memory"} * on (namespace, pod) group_left () max by (namespace, pod) (kube_pod_status_ready{namespace="martian-bank", condition="true"})) / 1048576
-```
+
 **V4: is the alert still firing?** Use `list_firing_alerts` and look for "Martian Bank: customer logins slow".
 
 ## Verdict rules
 
-VERIFIED only if all of these hold: V1 < 1.5 s, V2 < 25 %, the CPU limit is ≥ 0.25 core AND a memory limit exists
-(capacity now comes from Git), and the alert isn't firing. Otherwise NOT VERIFIED, saying which check failed.
-Spans arrive about 30–60 s after the sync, so if V1 has no data yet, say "wait 60 s and re-run". The queries use a 1-minute window so pre-fix logins age out quickly.
+VERIFIED only if all of these hold: V1 < 1.5 s, V2 < 25 %, the CPU limit is ≥ 0.25 core AND the memory limit is
+above 0 (capacity now comes from Git), and the alert isn't firing. Otherwise NOT VERIFIED, saying which check failed.
+If V1 has no data yet, say "wait 60 s and re-run".
 
 ## Report: exactly this shape
 
