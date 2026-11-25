@@ -347,8 +347,24 @@ data:
     svcs = sorted({re.match(r"CAP-\d+ ([^/]+)/", m).group(1) for m in policy_git + policy_live}
                   | {d["deployment"] for d in drift if d["container"] != "*"})
     pr_url = None
-    wo = booth_work_order() if MODE == "scan-pr" else None
-    if MODE == "scan-pr" and (drift or policy_git or policy_live):
+    wo = booth_work_order() if MODE in ("scan-pr", "scan-pr-fallback") else None
+    # The exact change InfraOps proposes, for Aiden for DevOps to ship (step 2): one line between the booth markers.
+    profile = json.load(open(PROFILE))
+    fix_lines = [f"  {s}: {profile[s]}" for s in svcs if s in profile]
+    fix_md = ("\n\n**Proposed change (InfraOps → Aiden for DevOps ships it as a PR):** in `deploy/values-civo.yaml`, "
+              "between the lines `# >>> booth:customer-auth-capacity` and `# <<< booth:customer-auth-capacity`, add:\n"
+              "```yaml\n" + "\n".join(fix_lines) + "\n```\nPR title: `InfraOps: declare customer-auth capacity in Git (drift + policy CAP-001/2/3)`") if fix_lines else ""
+    if MODE == "scan-pr" and wo and (drift or policy_git or policy_live):
+        # Booth flow: InfraOps reports and proposes; Aiden for DevOps executes the work order (opens and merges the PR).
+        if wo["status"] == "proposed":
+            print(f"InfraOps: {wo['ref']} is proposed but not approved yet: report only, nothing recorded")
+        else:
+            done = {p.get("step") for p in (wo.get("progress") or [])}
+            if 1 not in done:
+                inc("POST", f"/api/work-orders/{wo['ref']}/steps", {"step": 1, "did": "InfraOps drift + policy report, with the proposed change",
+                                                                     "result": (report_md + fix_md)[:3990]})
+            print(f"InfraOps: recorded step 1 (report + proposed change) on {wo['ref']}; Aiden for DevOps ships step 2")
+    elif MODE in ("scan-pr", "scan-pr-fallback") and (drift or policy_git or policy_live):
         if wo and wo["status"] == "proposed":
             print(f"InfraOps: {wo['ref']} is proposed but not approved yet: no PR until a person approves it")
         elif TOKEN:

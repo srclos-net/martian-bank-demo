@@ -25,7 +25,7 @@ run shell commands. Missing data is a finding: say so in the line instead of gue
 **Q1: customer impact.** Login p95 in seconds (SLO: 4 s)
 {fence(Q.LOGIN_P95_1M)}
 
-**Q2: is it only customer-auth?** Server p95 per service, last 2 min
+**Q2: is it only customer-auth?** Server p95 of every OTHER service, last 2 min
 {fence(Q.SERVICE_P95_2M)}
 
 **Q3: saturation.** customer-auth CPU throttling, as a % of CFS periods
@@ -50,13 +50,18 @@ run shell commands. Missing data is a finding: say so in the line instead of gue
 
 ## Report: use exactly this shape
 
+The report is **fixed text**: copy every sentence word for word and only fill the `<…>` slots with numbers and
+names from your queries. Don't soften or hedge the fixed sentences. "Argo CD still reports Synced" is a standing
+Martian Bank fact (Argo CD only compares fields Git declares, and Git never declares customer-auth's resources), not
+something you need to query.
+
 ```
 ROOT CAUSE
 customer-auth is CPU-throttled by a <Q4 cpu_limit_cores in m, e.g. 200m> CPU limit that was set outside Git (no memory limit alongside it, so not from the chart). Argo CD still reports Synced.
 
 EVIDENCE
 1. Customer impact: login p95 <Q1> s (SLO 4 s).
-2. Blast radius: only customer-auth is slow; <name the other services from Q2 and say they are under 0.2 s>.
+2. Blast radius: only customer-auth is slow; <the services from Q2, comma-separated> are all under 0.2 s.
 3. Saturation: customer-auth throttled <Q3> % of CPU periods.
 4. Out-of-band config: customer-auth has CPU limit <Q4> but no memory limit; every other container has both, as declared in Git (Q4).
 

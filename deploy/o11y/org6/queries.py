@@ -18,7 +18,7 @@ WHERE ServiceName = 'customer-auth' AND SpanName = 'POST /api/users/auth' AND Sp
 SERVICE_P95_2M = """SELECT ServiceName AS service, round(quantile(0.95)(Duration) / 1e9, 3) AS p95_s, count() AS requests
 FROM otel.otel_traces
 WHERE SpanKind = 'Server' AND Timestamp > now() - INTERVAL 2 MINUTE
-  AND ServiceName IN ('customer-auth', 'dashboard', 'accounts', 'transactions', 'loan', 'atm-locator')
+  AND ServiceName IN ('dashboard', 'accounts', 'transactions', 'loan', 'atm-locator')
 GROUP BY service ORDER BY p95_s DESC"""
 
 THROTTLE_PCT_2M = """SELECT round(100 * sumIf(d, m = 'container_cpu_cfs_throttled_periods_total')
@@ -37,6 +37,8 @@ FROM (SELECT Attributes['container'] AS container, Attributes['resource'] AS res
              argMax(Value, TimeUnix) AS v, argMax(Attributes['pod'], TimeUnix) AS pod
       FROM otel.otel_metrics_gauge
       WHERE MetricName = 'kube_pod_container_resource_limits' AND TimeUnix > now() - INTERVAL 2 MINUTE
+        AND Attributes['container'] IN ('customer-auth', 'dashboard', 'accounts', 'transactions', 'loan', 'atm-locator',
+                                        'nginx', 'ui', 'mongodb', 'locust')
       GROUP BY container, resource, Attributes['pod'])
 GROUP BY container ORDER BY container"""
 

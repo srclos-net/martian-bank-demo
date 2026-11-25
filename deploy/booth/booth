@@ -8,7 +8,9 @@
 #   booth login         time 3 real customer logins through https://bank.stackgen.run
 #   booth declare       Incidents: declare the incident from the firing alert; Aiden for SRE investigates
 #   booth handoff       Aiden for DevOps drafts the work order, filed in Incidents for a person to approve
-#   booth infraops      InfraOps scan (drift + policy); once the work order is approved: reconcile PR
+#   booth infraops      InfraOps scan (drift + policy); once the work order is approved: records the report and the
+#                       exact proposed change (step 1). Aiden for DevOps then ships it (PR, merge: steps 2-3)
+#   booth infraops --pr fallback: InfraOps opens the reconcile PR itself and records steps 1-2
 #   booth sync          make Argo CD pick up main now; records the merge step on the work order
 #   booth verify        Aiden for SRE verifies; records the check step (work order -> verified)
 #   booth reset         back to the start state: calm, close PRs, baseline Git,
@@ -152,7 +154,7 @@ case "${1:-help}" in
       curl -s -o /dev/null -m 60 -w "  login %{http_code} in %{time_total}s\n" -X POST https://bank.stackgen.run/api/users/auth \
         -H 'Content-Type: application/json' -d '{"email":"booth-visitor@martian.bank","password":"reinvent-1738"}'
     done ;;
-  infraops) infraops_job scan-pr ;;
+  infraops) if [ "${2:-}" = "--pr" ]; then infraops_job scan-pr-fallback; else infraops_job scan-pr; fi ;;
   sync) sync record ;;
   declare) python3 "$HANDOFF" declare ;;
   handoff) python3 "$HANDOFF" handoff ;;
@@ -182,5 +184,5 @@ EOF
     k get jobs -o name | grep "^job.batch/infraops-" | xargs -r "$KUBECTL" --context "$CTX" -n "$NS" delete >/dev/null 2>&1 || true
     k delete configmap infraops-report --ignore-not-found >/dev/null
     status ;;
-  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac
