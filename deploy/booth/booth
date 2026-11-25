@@ -97,7 +97,7 @@ for c in j['spec']['template']['spec']['containers']:
 print(json.dumps(j))" | k apply -f - >/dev/null
   k wait --for=condition=complete "job/$name" --timeout=180s >/dev/null 2>&1 \
     || { k logs "job/$name" -c scan --tail=40; die "InfraOps job $name failed"; }
-  k logs "job/$name" -c scan | grep -v '^{'
+  k logs "job/$name" -c scan | grep -v '^{' || true   # no output (e.g. no PRs to close) is fine
 }
 
 serving() { # wait until customer-auth answers through the real edge (no readiness probe in the chart)
