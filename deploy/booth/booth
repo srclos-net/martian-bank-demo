@@ -6,8 +6,11 @@
 #   booth blackfriday   Locust -> 30 users + the pinned login rush  [the incident]
 #   booth calm          Locust -> 3 users, login rush stopped (baseline)
 #   booth login         time 3 real customer logins through https://bank.stackgen.run
-#   booth infraops      run the InfraOps scan (drift + policy + reconcile PR)
-#   booth sync          make Argo CD pick up main now and wait for customer-auth
+#   booth declare       Incidents: declare the incident from the firing alert; Aiden for SRE investigates
+#   booth handoff       Aiden for DevOps drafts the work order, filed in Incidents for a person to approve
+#   booth infraops      InfraOps scan (drift + policy); once the work order is approved: reconcile PR
+#   booth sync          make Argo CD pick up main now; records the merge step on the work order
+#   booth verify        Aiden for SRE verifies; records the check step (work order -> verified)
 #   booth reset         back to the start state: calm, close PRs, baseline Git,
 #                       sync, re-arm, assert                  (~2 min)
 #
@@ -19,7 +22,8 @@ CTX="${BOOTH_CONTEXT:-fe-stackgen-run}"
 NS=martian-bank
 REPO=srclos-net/martian-bank-demo
 ARM_CPU=200m                # the out-of-band limit (root cause; < the 250m policy floor)
-RUSH="$(dirname "$0")/login-rush.yaml"   # pinned login load (3 workers, real bcrypt logins)
+RUSH="$(dirname "$0")/login-rush.yaml"
+HANDOFF="$(dirname "$0")/handoff.py"   # pinned login load (3 workers, real bcrypt logins)
 STORM_USERS=30; STORM_RATE=5
 CALM_USERS=3;   CALM_RATE=1
 CACHE="${BOOTH_CACHE:-$HOME/.cache/martian-booth}"
@@ -71,6 +75,10 @@ sync() {
   [ "$st" = Synced ] && [[ "$rev" == "$want"* ]] || die "Argo did not reach Synced@$want (is $st@$rev)"
   k rollout status deploy/customer-auth --timeout=180s >/dev/null
   say "Argo CD Synced @ ${want:0:7}, customer-auth rolled out"
+  if [ "${1:-}" = record ] && [ -n "$(python3 "$HANDOFF" wo)" ]; then
+    python3 "$HANDOFF" step 3 "Merged after the capacity policy gate; Argo CD synced ${want:0:7} and rolled customer-auth" \
+      --result "https://github.com/$REPO/commit/$want"
+  fi
 }
 
 # ---------------------------------------------------------------- infraops job
@@ -116,6 +124,7 @@ status() {
   chk "Locust virtual users" "$users" "$CALM_USERS"
   chk "login rush running" "$(k get job booth-login-rush -o name 2>/dev/null | wc -l | tr -d ' ')" "0"
   chk "open InfraOps PRs" "$prs" "0"
+  chk "open booth incidents (Incidents)" "$(python3 "$HANDOFF" status | grep -c . || true)" "0"
   [ $bad = 0 ] && say "READY: exact start state" || die "NOT at the start state: run 'booth reset'"
 }
 
@@ -144,9 +153,14 @@ case "${1:-help}" in
         -H 'Content-Type: application/json' -d '{"email":"booth-visitor@martian.bank","password":"reinvent-1738"}'
     done ;;
   infraops) infraops_job scan-pr ;;
-  sync) sync ;;
+  sync) sync record ;;
+  declare) python3 "$HANDOFF" declare ;;
+  handoff) python3 "$HANDOFF" handoff ;;
+  wo) python3 "$HANDOFF" status ;;
+  verify) python3 "$HANDOFF" verify ;;
   reset)
     "$0" calm
+    python3 "$HANDOFF" cleanup
     if k get secret infraops-github >/dev/null 2>&1; then infraops_job close-prs; fi
     repo
     python3 - "$CACHE/deploy/values-civo.yaml" <<'EOF'
@@ -168,5 +182,5 @@ EOF
     k get jobs -o name | grep "^job.batch/infraops-" | xargs -r "$KUBECTL" --context "$CTX" -n "$NS" delete >/dev/null 2>&1 || true
     k delete configmap infraops-report --ignore-not-found >/dev/null
     status ;;
-  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac

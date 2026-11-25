@@ -67,6 +67,34 @@ def gh(method, path, body=None):
         sys.exit(f"GitHub {method} {path}: {e.code} {e.read().decode()[:300]}")
 
 
+INC_URL = os.environ.get("INCIDENTS_URL", "").rstrip("/")
+INC_TOKEN = os.environ.get("INCIDENTS_TOKEN", "").strip()
+WO_TITLE = "Declare customer-auth capacity in Git"
+
+
+def inc(method, path, body=None):
+    req = urllib.request.Request(INC_URL + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": f"Bearer {INC_TOKEN}", "Content-Type": "application/json",
+                                          "X-Actor": "StackGen InfraOps"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        print(f"Incidents {method} {path}: {e.code} {e.read().decode()[:200]}")
+        return None
+
+
+def booth_work_order():
+    """The open booth work order (if Incidents is wired), else None."""
+    if not (INC_URL and INC_TOKEN):
+        return None
+    for w in inc("GET", "/api/work-orders") or []:
+        if w.get("title", "").startswith(WO_TITLE) and w.get("status") in ("proposed", "approved", "in_progress"):
+            return w
+    return None
+
+
 # ---------------------------------------------------------------- quantities
 def cpu_m(v):
     v = str(v)
@@ -270,14 +298,23 @@ report_md = "\n".join(md)
 svcs = sorted({re.match(r"CAP-\d+ ([^/]+)/", m).group(1) for m in policy_git + policy_live}
               | {d["deployment"] for d in drift if d["container"] != "*"})
 pr_url = None
+wo = booth_work_order() if MODE == "scan-pr" else None
 if MODE == "scan-pr" and (drift or policy_git or policy_live):
-    if TOKEN:
+    if wo and wo["status"] == "proposed":
+        print(f"InfraOps: {wo['ref']} is proposed but not approved yet: no PR until a person approves it")
+    elif TOKEN:
         pr_url = open_pr(report_md, svcs)
+        if wo and pr_url:
+            done = {p.get("step") for p in (wo.get("progress") or [])}
+            if 1 not in done:
+                inc("POST", f"/api/work-orders/{wo['ref']}/steps", {"step": 1, "did": "InfraOps drift + policy report", "result": report_md[:3900]})
+            inc("POST", f"/api/work-orders/{wo['ref']}/steps", {"step": 2, "did": f"Opened reconcile PR {pr_url}", "result": pr_url})
+            print(f"recorded steps 1-2 on {wo['ref']}")
     else:
         print("findings, but no GITHUB_TOKEN (Secret infraops-github): not opening a PR")
 
 report = {"time": ts, "drift": drift, "policy_live": policy_live, "policy_git": policy_git,
-          "services": svcs, "pr": pr_url}
+          "services": svcs, "pr": pr_url, "work_order": (wo or {}).get("ref")}
 print(report_md)
 print(json.dumps(report))
 os.makedirs(os.path.join(WORK, "out"), exist_ok=True)

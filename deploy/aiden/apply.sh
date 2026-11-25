@@ -18,7 +18,7 @@ upsert() { # upsert <collection> <name> <json-file>
     if [ "$1" = skills ]; then   # skills are updated by ID, not name
       ref=$(curl -s -m 30 "${H[@]}" "$URL/skills?orgId=$WS" | python3 -c 'import sys,json;n=sys.argv[1];print(next(i["id"] for i in json.load(sys.stdin)["items"] if i["name"]==n))' "$2")
     fi
-    python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));d.pop("name",None);print(json.dumps(d))' "$3" > "$tmp/put.json"
+    python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));(sys.argv[2]=="agents") and d.pop("name",None);print(json.dumps(d))' "$3" "$1" > "$tmp/put.json"
     out=$(curl -s -m 30 -w '\n%{http_code}' "${H[@]}" -X PUT "$URL/$1/$ref?orgId=$WS" -d @"$tmp/put.json"); code=${out##*$'\n'}
     [[ "$code" =~ ^20 ]] && { echo "updated $1/$2"; return; }
   fi
@@ -32,4 +32,5 @@ for d in skills/*/; do
   upsert skills "$n" "$tmp/$n.json"
 done
 upsert agents martian-bank-sre agent.json
+upsert agents martian-bank-devops agent-devops.json
 upsert workflows martian-bank-verify workflow-verify.json
