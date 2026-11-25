@@ -14,8 +14,8 @@
 | ~3:15 | **SRE** | ④ Investigation panel fills in (~45 s): ROOT CAUSE · 4 EVIDENCE lines · HAND-OFF → InfraOps | "Aiden ignores the noise and goes to customer impact: only customer-auth is slow, it's ~95 % CPU-throttled by a 200 m limit, and that limit has no memory limit next to it. Git never declared it: someone ran kubectl. That's why Argo can't see it." |
 | ~4:00 | **DevOps** | ⑥ `booth handoff` → ④ **WO-n** appears: *"Declare customer-auth capacity in Git"*, risk normal, 4 steps, proposed by **Aiden for DevOps** | "Aiden for DevOps turns the diagnosis into a work order: look, act, act, check. Proposed, not done, because a service can't approve its own change." |
 | ~4:30 | **Governance** | ④ you click **Approve** on WO-n | "A person approves. That's the control." |
-| ~4:45 | **InfraOps** | ⑥ `booth infraops` (~40 s) → ④ steps 1–2 ✓ (formatted drift + policy report, PR link) → ⑤ PR *"InfraOps: declare customer-auth capacity in Git"* (1-line diff) | "InfraOps compares every live field against Git, not just the ones Git declares. One drift, four policy violations. It opens the PR that puts the capacity in Git, and it wouldn't do that before the approval." |
-| ~5:45 | **DevOps** | ⑤ policy gate (capacity CAP-001/2/3) green → **Squash and merge** → ⑥ `booth sync` → ④ step 3 ✓ | "The fix ships like code: policy-checked, merged, applied by Argo. Nobody touched the cluster." |
+| ~4:45 | **InfraOps** | ⑥ `booth infraops` (~40 s) → ④ step 1 ✓: the formatted drift + policy report **and the exact proposed change** | "InfraOps compares every live field against Git, not just the ones Git declares. One drift, four policy violations, and it proposes the fix. It did nothing before the approval." |
+| ~5:30 | **DevOps** | ⑥ `booth execute` (~70 s) → **Aiden for DevOps** opens ⑤ the PR (1-line diff), waits for the capacity policy gate, merges → ④ steps 2 ✓ 3 ✓ *by Aiden for DevOps*; ⑥ `booth sync` | "Aiden for DevOps executes the approved work order: it ships InfraOps' change through the same pipeline as code, policy-checked, and closes its own tasks. Nobody touched the cluster." |
 | ~6:30 | — | ② log in again: **< 1 s**; ① p95 drops under the line | "Same Black Friday load, logins back under a second." |
 | ~7:30 | **SRE** | ⑥ `booth verify` (waits for clean numbers, ~1–2 min, then ~35 s) → ④ step 4 ✓ **VERIFIED** → WO verified → incident **monitoring → resolved** when the alert clears | "Aiden checks its own fix before anyone closes anything. Detect, diagnose, change, govern, verify: the outer loop, three products, one incident." |
 | after | — | ⑥ `booth reset` (~2 min, while you talk to the visitor) | — |
@@ -36,5 +36,6 @@ then the work order with all 4 steps ✓ and its links → ⑤ the merged PR (1 
 ## If something stalls (keep talking, use the fallback, never improvise a cluster change)
 - The alert is slow (> 3 min): ⑥ `booth declare` works as soon as the alert group exists; talk over the dashboard meanwhile.
 - The Aiden RCA is slow (> 2 min) or off-script: switch to the recorded run (RUNBOOK § Fallbacks); the outcome is the same.
-- The policy gate doesn't show (Actions off): merge anyway and say "the gate runs on every PR". Show `policy/capacity.rego`.
+- The policy gate doesn't show (Actions off): Aiden for DevOps reports "no checks reported" and merges. Say "the gate runs on every PR" and show `policy/capacity.rego`.
+- `booth execute` prints BLOCKED: fallback `booth infraops --pr`, merge the PR on GitHub, `booth sync --record`.
 - `booth verify` says "waiting for the fixed pod's numbers": that's expected for 1–2 min. Show ② logging in fast meanwhile.
