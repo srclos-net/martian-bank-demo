@@ -202,7 +202,7 @@ def open_pr(report_md, svcs):
     if not svcs:
         return None
     for pr in gh("GET", f"/repos/{REPO}/pulls?state=open&per_page=50"):
-        if pr["head"]["ref"].startswith("infraops/"):
+        if pr["head"]["ref"].startswith(("infraops/", "aiden-devops/")):
             print(f"reconcile PR already open: {pr['html_url']}")
             return pr["html_url"]
     f = gh("GET", f"/repos/{REPO}/contents/{VALUES}?ref={BRANCH}")
@@ -245,12 +245,13 @@ def close_prs():
     if not TOKEN:
         sys.exit("close-prs needs GITHUB_TOKEN")
     for pr in gh("GET", f"/repos/{REPO}/pulls?state=open&per_page=50"):
-        if pr["head"]["ref"].startswith("infraops/"):
+        if pr["head"]["ref"].startswith(("infraops/", "aiden-devops/")):
             gh("PATCH", f"/repos/{REPO}/pulls/{pr['number']}", {"state": "closed"})
             print(f"closed {pr['html_url']}")
-    for ref in gh("GET", f"/repos/{REPO}/git/matching-refs/heads/infraops/"):
-        gh("DELETE", f"/repos/{REPO}/git/{ref['ref']}")
-        print(f"deleted {ref['ref']}")
+    for prefix in ("infraops/", "aiden-devops/"):
+        for ref in gh("GET", f"/repos/{REPO}/git/matching-refs/heads/{prefix}"):
+            gh("DELETE", f"/repos/{REPO}/git/{ref['ref']}")
+            print(f"deleted {ref['ref']}")
 
 
 # ---------------------------------------------------------------- main

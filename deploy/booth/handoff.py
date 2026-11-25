@@ -7,6 +7,8 @@
                                 ("Aiden for DevOps") for a PERSON to approve
   handoff.py wo                 print the open booth work order ref (or nothing)
   handoff.py step N "did" [--result R] [--ok true|false]   record a step on the open booth work order
+  handoff.py execute            Aiden for DevOps executes the approved work order (PR + merge; closes steps 2-3)
+  handoff.py sandbox            Aiden for DevOps pre-flight: GitHub sandbox + ServiceNow reachable
   handoff.py verify             Aiden for SRE verifies; records the check step (passed / failed)
   handoff.py cleanup            reset: cancel the booth work order if still only proposed, resolve booth incidents
   handoff.py status             one line per open booth incident / work order
@@ -226,6 +228,27 @@ elif cmd == "verify":
                                                            "result": text[:3900], "ok": ok}, actor="Aiden for SRE")
     say(f"{w['ref']} check {'PASSED' if ok else 'FAILED'} → work order {r.get('status', '?')}")
     if not ok:
+        sys.exit(2)
+
+elif cmd == "execute":
+    w = booth_wo() or die("no open booth work order")
+    if w["status"] not in ("approved", "in_progress"):
+        die(f"{w['ref']} is {w['status']}: a person approves it in Incidents first")
+    done = {p.get("step") for p in (w.get("progress") or [])}
+    if 1 not in done:
+        die(f"{w['ref']}: InfraOps hasn't recorded step 1 yet (run: booth infraops)")
+    say(f"Aiden for DevOps is executing {w['ref']} (opens the PR, waits for the policy gate, merges)…")
+    trace, text = aiden_chat("martian-bank-devops", f"Execute work order {w['ref']}", f"booth-exec-{w['ref']}-{int(time.time())}")
+    print(text)
+    if not text.startswith("EXECUTED"):
+        die("Aiden for DevOps didn't finish; fallback: booth infraops --pr, merge by hand, booth sync --record")
+    w = booth_wo() or {}
+    say(f"{w.get('ref', '?')} is {w.get('status', '?')}; trace {trace}")
+
+elif cmd == "sandbox":
+    trace, text = aiden_chat("martian-bank-devops", "sandbox check", f"booth-sandbox-{int(time.time())}")
+    print(text)
+    if not text.startswith("SANDBOX OK"):
         sys.exit(2)
 
 elif cmd == "cleanup":

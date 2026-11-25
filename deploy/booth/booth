@@ -11,7 +11,9 @@
 #   booth infraops      InfraOps scan (drift + policy); once the work order is approved: records the report and the
 #                       exact proposed change (step 1). Aiden for DevOps then ships it (PR, merge: steps 2-3)
 #   booth infraops --pr fallback: InfraOps opens the reconcile PR itself and records steps 1-2
-#   booth sync          make Argo CD pick up main now; records the merge step on the work order
+#   booth execute       Aiden for DevOps executes the approved work order: opens + merges the PR (steps 2-3)
+#   booth sync          make Argo CD pick up main now (--record: also record step 3, for the fallback path)
+#   booth sandbox       pre-flight: Aiden for DevOps can reach GitHub + Incidents
 #   booth verify        Aiden for SRE verifies; records the check step (work order -> verified)
 #   booth reset         back to the start state: calm, close PRs, baseline Git,
 #                       sync, re-arm, assert                  (~2 min)
@@ -77,7 +79,7 @@ sync() {
   [ "$st" = Synced ] && [[ "$rev" == "$want"* ]] || die "Argo did not reach Synced@$want (is $st@$rev)"
   k rollout status deploy/customer-auth --timeout=180s >/dev/null
   say "Argo CD Synced @ ${want:0:7}, customer-auth rolled out"
-  if [ "${1:-}" = record ] && [ -n "$(python3 "$HANDOFF" wo)" ]; then
+  if [ "${1:-}" = --record ] && [ -n "$(python3 "$HANDOFF" wo)" ]; then
     python3 "$HANDOFF" step 3 "Merged after the capacity policy gate; Argo CD synced ${want:0:7} and rolled customer-auth" \
       --result "https://github.com/$REPO/commit/$want"
   fi
@@ -116,7 +118,7 @@ status() {
   repo; block=$(baseline_block "$CACHE/deploy/values-civo.yaml" | wc -l | tr -d ' ')
   read -r st health < <(ka get application martian-bank -o jsonpath='{.status.sync.status} {.status.health.status}'; echo)
   prs=$(curl -s "https://api.github.com/repos/$REPO/pulls?state=open&per_page=50" \
-        | python3 -c 'import sys,json;print(sum(p["head"]["ref"].startswith("infraops/") for p in json.load(sys.stdin)))' 2>/dev/null || echo "?")
+        | python3 -c 'import sys,json;print(sum(p["head"]["ref"].startswith(("infraops/", "aiden-devops/")) for p in json.load(sys.stdin)))' 2>/dev/null || echo "?")
   chk() { if [ "$2" = "$3" ]; then printf '  ✓ %-38s %s\n' "$1" "$2"; else printf '  ✗ %-38s %s (want %s)\n' "$1" "$2" "$3"; bad=1; fi; }
   echo "Booth start state:"
   chk "customer-auth live CPU limit (armed)" "${lim:-none}" "$ARM_CPU"
@@ -125,7 +127,7 @@ status() {
   chk "Argo CD sync/health (the blind spot)" "$st/$health" "Synced/Healthy"
   chk "Locust virtual users" "$users" "$CALM_USERS"
   chk "login rush running" "$(k get job booth-login-rush -o name 2>/dev/null | wc -l | tr -d ' ')" "0"
-  chk "open InfraOps PRs" "$prs" "0"
+  chk "open InfraOps / Aiden PRs" "$prs" "0"
   chk "open booth incidents (Incidents)" "$(python3 "$HANDOFF" status | grep -c . || true)" "0"
   [ $bad = 0 ] && say "READY: exact start state" || die "NOT at the start state: run 'booth reset'"
 }
@@ -155,7 +157,9 @@ case "${1:-help}" in
         -H 'Content-Type: application/json' -d '{"email":"booth-visitor@martian.bank","password":"reinvent-1738"}'
     done ;;
   infraops) if [ "${2:-}" = "--pr" ]; then infraops_job scan-pr-fallback; else infraops_job scan-pr; fi ;;
-  sync) sync record ;;
+  sync) sync "${2:-}" ;;
+  execute) python3 "$HANDOFF" execute ;;
+  sandbox) python3 "$HANDOFF" sandbox ;;
   declare) python3 "$HANDOFF" declare ;;
   handoff) python3 "$HANDOFF" handoff ;;
   wo) python3 "$HANDOFF" status ;;
@@ -184,5 +188,5 @@ EOF
     k get jobs -o name | grep "^job.batch/infraops-" | xargs -r "$KUBECTL" --context "$CTX" -n "$NS" delete >/dev/null 2>&1 || true
     k delete configmap infraops-report --ignore-not-found >/dev/null
     status ;;
-  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) awk 'NR>1 && /^set /{exit} NR>1' "$0" | sed 's/^# \{0,1\}//' ;;
 esac
