@@ -1,0 +1,13 @@
+{
+  "name": "martian-bank-verify",
+  "domain": "incident-response",
+  "description": "After the InfraOps capacity PR ships: verify Martian Bank logins recovered and that capacity is owned by Git again (fixed checks, fixed verdict). Load skill martian-bank-booth-verify, follow it exactly, and output only the verdict block.",
+  "required_inputs": [],
+  "example_queries": ["Verify the Martian Bank login fix", "Did the customer-auth capacity PR fix logins?"],
+  "stages": [
+    {"stage_id": "verify", "description": "Run the martian-bank-booth-verify checks and report the fixed-shape verdict.", "required": true, "note": "Load skill martian-bank-booth-verify and follow it exactly. Output only the verdict block."}
+  ],
+  "stage_bindings": [
+    {"stage_id": "verify", "agent_ref": "martian-bank-sre", "skill_refs": ["martian-bank-booth-verify"]}
+  ]
+}
