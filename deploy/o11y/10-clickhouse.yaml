@@ -1,0 +1,143 @@
+# Martian Bank observability store (Grafana org 6): one ClickHouse holding OTel logs, traces and
+# metrics written by mb-otelcol (otel database, 14-day TTL).
+# Users (passwords come from the mb-clickhouse-users Secret, created out of band):
+#   otel    - read/write, used only by the in-cluster collector
+#   grafana - read-only (readonly=2 so the Grafana plugin can set query settings)
+#   default - localhost only (in-pod admin / health checks)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mb-clickhouse-users
+  namespace: mb-o11y
+data:
+  # OBI (cluster-wide eBPF auto-instrumentation) attaches uprobes to running binaries, which changes ClickHouse's
+  # in-memory executable checksum -> "Code: 246 CORRUPTED_DATA" at start. Skip that self-check.
+  server.xml: |
+    <clickhouse>
+      <skip_binary_checksum_checks>true</skip_binary_checksum_checks>
+    </clickhouse>
+  users.xml: |
+    <clickhouse>
+      <profiles>
+        <grafana_ro>
+          <readonly>2</readonly>
+          <max_execution_time>60</max_execution_time>
+          <max_memory_usage>2000000000</max_memory_usage>
+        </grafana_ro>
+      </profiles>
+      <users>
+        <default>
+          <networks replace="replace"><ip>127.0.0.1</ip><ip>::1</ip></networks>
+        </default>
+        <otel>
+          <password from_env="CH_OTEL_PASSWORD"/>
+          <networks><ip>::/0</ip></networks>
+          <profile>default</profile>
+          <quota>default</quota>
+        </otel>
+        <grafana>
+          <password from_env="CH_GRAFANA_PASSWORD"/>
+          <networks><ip>::/0</ip></networks>
+          <profile>grafana_ro</profile>
+          <quota>default</quota>
+        </grafana>
+      </users>
+    </clickhouse>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: mb-o11y
+spec:
+  selector:
+    app: mb-clickhouse
+  ports:
+    - name: http
+      port: 8123
+    - name: native
+      port: 9000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mb-clickhouse
+  namespace: mb-o11y
+spec:
+  serviceName: clickhouse
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mb-clickhouse
+  template:
+    metadata:
+      labels:
+        app: mb-clickhouse
+    spec:
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:25.8
+          ports:
+            - name: http
+              containerPort: 8123
+            - name: native
+              containerPort: 9000
+          env:
+            - name: CH_OTEL_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: mb-clickhouse-users, key: otel}
+            - name: CH_GRAFANA_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: mb-clickhouse-users, key: grafana}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            - name: users
+              mountPath: /etc/clickhouse-server/users.d/mb-users.xml
+              subPath: users.xml
+            - name: users
+              mountPath: /etc/clickhouse-server/config.d/mb-server.xml
+              subPath: server.xml
+          readinessProbe:
+            httpGet: {path: /ping, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /ping, port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 250m, memory: 1Gi}
+            limits: {cpu: "2", memory: 4Gi}
+      volumes:
+        - name: users
+          configMap:
+            name: mb-clickhouse-users
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: civo-volume
+        resources:
+          requests:
+            storage: 20Gi
+---
+# Grafana (ObserveNow, outside this cluster) reaches ClickHouse's HTTP port over 443 only, as the read-only
+# 'grafana' user. Same pattern as ve-data (Civo wildcard host; stackgen.run DNS is Route53).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mb-clickhouse
+  namespace: mb-o11y
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: mb-clickhouse.39aaccad-291b-488b-9e67-526a5514adf2.k8s.civo.com
+      http:
+        paths:
+          - {path: /, pathType: Prefix, backend: {service: {name: clickhouse, port: {number: 8123}}}}
+  tls:
+    - {hosts: [mb-clickhouse.39aaccad-291b-488b-9e67-526a5514adf2.k8s.civo.com], secretName: mb-clickhouse-tls}

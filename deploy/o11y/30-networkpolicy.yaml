@@ -1,0 +1,29 @@
+# ClickHouse: native port only from the gateway collector; HTTP only via Traefik (hostNetwork: node IPs) for Grafana.
+# Gateway collector: OTLP only from the logs DaemonSet and the devopsnow fan-out collectors.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: mb-clickhouse, namespace: mb-o11y}
+spec:
+  podSelector: {matchLabels: {app: mb-clickhouse}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app: mb-otelcol}}}]
+      ports: [{port: 9000}, {port: 8123}]
+    - from:
+        - ipBlock: {cidr: 192.168.1.0/24}
+        - ipBlock: {cidr: 10.42.1.0/32}
+        - ipBlock: {cidr: 10.42.2.0/32}
+        - ipBlock: {cidr: 10.42.3.0/32}
+      ports: [{port: 8123}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: mb-otelcol, namespace: mb-o11y}
+spec:
+  podSelector: {matchLabels: {app: mb-otelcol}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app: mb-otelcol-logs}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: devopsnow}}
+      ports: [{port: 4317}, {port: 4318}]

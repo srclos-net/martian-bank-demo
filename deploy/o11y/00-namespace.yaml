@@ -1,0 +1,10 @@
+# Martian Bank's own observability store for Grafana org 6 "AWS re:Invent" (docs/reinvent/).
+# Everything here is about the martian-bank namespace only: ClickHouse holds its metrics, logs, traces and
+# k8s events (OTel exporter schema, db `otel`, 14-day TTL). Applied by hand (not an Argo source):
+#   kubectl --context fe-stackgen-run apply -f deploy/o11y/
+# Secret mb-clickhouse-users (keys otel, grafana) is generated out of band (RUNBOOK) — never committed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mb-o11y
+  labels: {app.kubernetes.io/part-of: martian-bank}

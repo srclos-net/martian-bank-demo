@@ -1,0 +1,197 @@
+# mb-otelcol: the gateway for Martian Bank telemetry -> ClickHouse (org 6).
+#   in:  OTLP  - martian-bank spans fanned out from devopsnow/otel-collector (OBI eBPF), browser RUM from
+#                devopsnow/faro-collector (app martian-bank-ui), pod logs from the mb-otelcol-logs DaemonSet
+#        scrape - cAdvisor (via the API server node proxy) and kube-state-metrics, both filtered to martian-bank
+#        k8s_events - events in martian-bank
+#   derive: spanmetrics (calls + duration histogram per service/span) from the traces
+#   out: ClickHouse (otel_traces, otel_logs, otel_metrics_*), 14-day TTL
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: mb-otelcol, namespace: mb-o11y}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: mb-otelcol}
+rules:
+  - apiGroups: [""]
+    resources: [nodes, nodes/proxy]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: mb-otelcol}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: mb-otelcol}
+subjects: [{kind: ServiceAccount, name: mb-otelcol, namespace: mb-o11y}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: mb-otelcol-events, namespace: martian-bank}
+rules:
+  - apiGroups: ["", events.k8s.io]
+    resources: [events]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: mb-otelcol-events, namespace: martian-bank}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: mb-otelcol-events}
+subjects: [{kind: ServiceAccount, name: mb-otelcol, namespace: mb-o11y}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: mb-otelcol, namespace: mb-o11y}
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc: {endpoint: 0.0.0.0:4317}
+          http: {endpoint: 0.0.0.0:4318}
+      k8s_events:
+        auth_type: serviceAccount
+        namespaces: [martian-bank]
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: cadvisor
+              scrape_interval: 15s
+              scheme: https
+              tls_config: {ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
+              authorization: {credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token}
+              kubernetes_sd_configs: [{role: node}]
+              relabel_configs:
+                - {target_label: __address__, replacement: "kubernetes.default.svc:443"}
+                - {source_labels: [__meta_kubernetes_node_name], regex: "(.+)", target_label: __metrics_path__, replacement: "/api/v1/nodes/$${1}/proxy/metrics/cadvisor"}
+                - {source_labels: [__meta_kubernetes_node_name], target_label: node}
+              metric_relabel_configs:
+                - {source_labels: [namespace], regex: martian-bank, action: keep}
+                - {source_labels: [container], regex: ".+", action: keep}
+                - {source_labels: [__name__], action: keep, regex: "container_(cpu_usage_seconds_total|cpu_cfs_periods_total|cpu_cfs_throttled_periods_total|cpu_cfs_throttled_seconds_total|memory_working_set_bytes|oom_events_total|network_receive_bytes_total|network_transmit_bytes_total|spec_cpu_quota|spec_memory_limit_bytes)"}
+            - job_name: kube-state-metrics
+              scrape_interval: 15s
+              static_configs: [{targets: ["devopsnow-agent-kubestatemetrics.devopsnow.svc:8080"]}]
+              metric_relabel_configs:
+                - {source_labels: [namespace], regex: martian-bank, action: keep}
+                - {source_labels: [__name__], action: keep, regex: "kube_pod_container_resource_(limits|requests)|kube_pod_container_status_(restarts_total|ready|waiting_reason|last_terminated_reason|terminated_reason)|kube_pod_status_(ready|phase)|kube_pod_info|kube_deployment_(spec_replicas|status_replicas_available|status_replicas_unavailable)|kube_persistentvolumeclaim_info|kube_job_status_(active|failed|succeeded)"}
+    connectors:
+      spanmetrics:
+        histogram:
+          explicit:
+            buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 4s, 8s, 15s, 30s]
+        dimensions:
+          - {name: http.response.status_code}
+        metrics_flush_interval: 15s
+    processors:
+      memory_limiter: {check_interval: 1s, limit_mib: 700}
+      batch: {send_batch_size: 5000, timeout: 5s}
+      resource/cluster:
+        attributes:
+          - {key: k8s.cluster.name, value: fe-stackgen-run, action: insert}
+          - {key: k8s.namespace.name, value: martian-bank, action: insert}
+    exporters:
+      clickhouse:
+        endpoint: tcp://clickhouse.mb-o11y.svc:9000?dial_timeout=10s
+        database: otel
+        username: otel
+        password: ${env:CH_OTEL_PASSWORD}
+        create_schema: true
+        ttl: 336h
+        logs_table_name: otel_logs
+        traces_table_name: otel_traces
+        timeout: 10s
+        retry_on_failure: {enabled: true, max_elapsed_time: 300s}
+        sending_queue: {queue_size: 1000}
+    extensions:
+      health_check: {endpoint: 0.0.0.0:13133}
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:  {receivers: [otlp], processors: [memory_limiter, resource/cluster, batch], exporters: [clickhouse, spanmetrics]}
+        metrics: {receivers: [otlp, prometheus, spanmetrics], processors: [memory_limiter, resource/cluster, batch], exporters: [clickhouse]}
+        logs:    {receivers: [otlp, k8s_events], processors: [memory_limiter, resource/cluster, batch], exporters: [clickhouse]}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: mb-otelcol, namespace: mb-o11y}
+spec:
+  selector: {app: mb-otelcol}
+  ports:
+    - {name: otlp-grpc, port: 4317}
+    - {name: otlp-http, port: 4318}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: mb-otelcol, namespace: mb-o11y}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: mb-otelcol}}
+  template:
+    metadata: {labels: {app: mb-otelcol}}
+    spec:
+      serviceAccountName: mb-otelcol
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: otelcol
+          image: otel/opentelemetry-collector-contrib:0.159.0
+          args: ["--config=/conf/config.yaml"]
+          env:
+            - name: CH_OTEL_PASSWORD
+              valueFrom: {secretKeyRef: {name: mb-clickhouse-users, key: otel}}
+          ports: [{containerPort: 4317}, {containerPort: 4318}, {containerPort: 13133}]
+          readinessProbe: {httpGet: {path: /, port: 13133}}
+          volumeMounts: [{name: conf, mountPath: /conf}]
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+      volumes: [{name: conf, configMap: {name: mb-otelcol}}]
+---
+# Pod logs of the martian-bank namespace only (read-only hostPath; root to read kubelet-owned files).
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: mb-otelcol-logs, namespace: mb-o11y}
+data:
+  config.yaml: |
+    receivers:
+      filelog:
+        include: [/var/log/pods/martian-bank_*/*/*.log]
+        exclude: [/var/log/pods/martian-bank_*/otelcol*/*.log]
+        start_at: end
+        include_file_path: true
+        operators:
+          - {type: container, id: container-parser}
+    processors:
+      batch: {timeout: 5s}
+      resource/service:
+        attributes:
+          - {key: service.name, from_attribute: k8s.container.name, action: insert}
+    exporters:
+      otlp:
+        endpoint: mb-otelcol.mb-o11y.svc:4317
+        tls: {insecure: true}
+    service:
+      pipelines:
+        logs: {receivers: [filelog], processors: [resource/service, batch], exporters: [otlp]}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: mb-otelcol-logs, namespace: mb-o11y}
+spec:
+  selector: {matchLabels: {app: mb-otelcol-logs}}
+  template:
+    metadata: {labels: {app: mb-otelcol-logs}}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: otelcol
+          image: otel/opentelemetry-collector-contrib:0.159.0
+          args: ["--config=/conf/config.yaml"]
+          securityContext: {runAsUser: 0, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL], add: [DAC_READ_SEARCH]}}
+          volumeMounts:
+            - {name: conf, mountPath: /conf}
+            - {name: pods, mountPath: /var/log/pods, readOnly: true}
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+      volumes:
+        - {name: conf, configMap: {name: mb-otelcol-logs}}
+        - {name: pods, hostPath: {path: /var/log/pods, type: Directory}}
