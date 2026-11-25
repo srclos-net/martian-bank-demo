@@ -25,7 +25,7 @@ ARM_CPU=200m                # the out-of-band limit (root cause; < the 250m poli
 RUSH="$(dirname "$0")/login-rush.yaml"
 HANDOFF="$(dirname "$0")/handoff.py"   # pinned login load (3 workers, real bcrypt logins)
 STORM_USERS=30; STORM_RATE=5
-CALM_USERS=3;   CALM_RATE=1
+CALM_USERS=3;   CALM_RATE=10
 CACHE="${BOOTH_CACHE:-$HOME/.cache/martian-booth}"
 KUBECTL="${KUBECTL:-/opt/homebrew/bin/kubectl}"
 [ -x "$KUBECTL" ] || KUBECTL=kubectl

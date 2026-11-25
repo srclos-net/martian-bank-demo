@@ -217,13 +217,18 @@ def alerts():
 
 # ------------------------------------------------------------------------------------------------ routing
 def incidents_webhook():
-    tok = base64.b64decode(subprocess.run(["/opt/homebrew/bin/kubectl", "--context", "fe-stackgen-run", "-n", "martian-bank", "get", "secret",
-                                           "incidents-booth", "-o", "jsonpath={.data.token}"], capture_output=True, text=True, check=True).stdout).decode()
-    req = urllib.request.Request("https://incidents.stackgen.run/api/integrations", headers={"Authorization": f"Bearer {tok}"})
-    for i in json.load(urllib.request.urlopen(req, timeout=30)):
-        if i["name"] == "fe-stackgen-run (ObserveNow)":
-            return i["url"]
-    sys.exit("Incidents integration 'fe-stackgen-run (ObserveNow)' not found")
+    # Service tokens see the integration token masked ("…"), so read the real inbound URL inside the Incidents pod
+    # with the app's own automation token. It goes straight into the contact point; never printed.
+    k = ["/opt/homebrew/bin/kubectl", "--context", "fe-stackgen-run", "-n", "incidents"]
+    pod = subprocess.run(k + ["get", "pods", "-o", "name", "--field-selector=status.phase=Running"], capture_output=True, text=True, check=True).stdout.split()
+    pod = next(p for p in pod if "stackgen-incidents" in p)
+    js = ("fetch('http://localhost:9100/api/integrations',{headers:{Authorization:'Bearer '+process.env.AUTOMATION_TOKEN}})"
+          ".then(r=>r.json()).then(l=>{const i=l.find(x=>x.name==='fe-stackgen-run (ObserveNow)');process.stdout.write(i?i.url:'')})")
+    url = subprocess.run(k + ["exec", pod, "--", "node", "-e", js], capture_output=True, text=True).stdout.strip().splitlines()
+    url = next((u for u in url if u.startswith("https://") and "…" not in u), "")
+    if not url:
+        sys.exit("could not read the Incidents inbound URL")
+    return url
 
 
 def routing():
