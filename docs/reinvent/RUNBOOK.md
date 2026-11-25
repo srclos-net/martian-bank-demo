@@ -10,8 +10,10 @@ works, reset, fallbacks and troubleshooting. All commands run from the repo root
 | Martian Bank | ns `martian-bank`, cluster `fe-stackgen-run` (Civo), Argo app `martian-bank` | auto-sync + self-heal from `main` |
 | The failure | `booth arm`: `kubectl patch` sets `customer-auth` `limits.cpu=200m` | Git never declares customer-auth resources, so Argo stays **Synced** |
 | Load | Locust (30 users) + `deploy/booth/login-rush.yaml` (3 real-login workers) | pinned: p95 ~15 s armed, ~0.2–0.5 s fixed |
-| Alert | ObserveNow org 1 rule `martian-bank-login-slow` (p95 > 4 s, 20 s eval, 30 s pending) → contact point → Incidents integration 4 | as code: `deploy/observability/booth-alert-rule.yaml` |
-| Dashboard | ObserveNow org 6 "AWS re:Invent", uid `martian-bank-booth` (copy in org 1) | `deploy/observability/booth-dashboard.json` |
+| Telemetry store | ns `mb-o11y`: ClickHouse 25.8 (db `otel`, 14-day TTL) + `mb-otelcol` gateway + `mb-otelcol-logs` DaemonSet; **Martian Bank only** | `deploy/o11y/` (applied by hand); spans + RUM fanned out from `devopsnow/otel-collector` and `faro-collector` (martian-bank filter) |
+| Grafana | ObserveNow **org 6 "AWS re:Invent"**: one datasource, `clickhouse`. Dashboards: Booth, Services, Kubernetes, Logs & errors, Customers (RUM) | `deploy/o11y/org6/provision.py` (all SQL in `queries.py`) |
+| Alerts | org 6, 20 rules: **1 paging** (`martian-bank-login-slow`, p95 > 4 s, 20 s eval, 30 s pending → Incidents); **10 developer-style** noise; **9 platform** (throttling, no memory limit, restarts, OOM…) → triage only | `provision.py`; routing: `severity=critical, team=sre` → Incidents, rest → triage-only |
+| Incidents is booth-only | org 1's default route goes to `/dev/null`; only org 6's paging alert reaches Incidents | old org-1 policy backup in the setup session's scratchpad |
 | Incidents | https://incidents.stackgen.run, 0.24.26 | its Aiden connection → `martian-bank-sre`; work orders render markdown |
 | Aiden | stage.dev workspace `reinvent-booth` (f2a4ba74…) | agents `martian-bank-sre`, `martian-bank-devops`; skills; workflow `martian-bank-verify`; `deploy/aiden/apply.sh` |
 | InfraOps | `deploy/infraops/scan.py` → suspended CronJob `infraops-scan` (via Git: `deploy/manifests/infraops-scan.yaml`) | drift (all live fields vs rendered Git) + `policy/capacity.rego` + PR; waits for work-order approval |
@@ -26,6 +28,7 @@ works, reset, fallbacks and troubleshooting. All commands run from the repo root
 | `~/.config/aiden/reinvent-onow-viewer.key` / `-admin.key` | ObserveNow org 6 service accounts | Stephanie |
 | `~/.config/aiden/reinvent-github.key` → Secret `martian-bank/infraops-github` | fine-grained PAT, this repo only (contents + PRs), expires after re:Invent | Stephanie |
 | Secret `martian-bank/incidents-booth` (url, token) | Incidents service token `booth-aiden` | created 2026-11-25 |
+| Secret `mb-o11y/mb-clickhouse-users` (otel, grafana) | ClickHouse users (collector read/write; Grafana read-only) | generated in-cluster 2026-11-25 |
 | `incidents-keys.AIDEN_TOKEN` | the booth Aiden key, for Incidents' direct connection | created 2026-11-25 |
 All of these are logged in #community-devops (CISO rule). Revoke after the event: the PAT, `booth-aiden` (Incidents → Settings → API tokens), and the Aiden and ObserveNow keys.
 
@@ -72,6 +75,10 @@ All of these are logged in #community-devops (CISO rule). Revoke after the event
 | The arm or reset shows 502s for ~30 s | customer-auth boots slowly at 200m (no readiness probe) | the script waits for real logins; just wait |
 | An infraops change doesn't take effect | `deploy/manifests` is an Argo source: direct applies get self-healed | change `deploy/infraops/*`, run `python3 deploy/infraops/gen-manifest.py`, commit, push |
 | Incidents shows the WO steps as raw text | Incidents < 0.24.26 | deploy 0.24.26+ (stackgen-incidents repo, civo overlay) |
+| Org 6 panels empty | collector or ClickHouse down, or the fan-out was lost (a `helm upgrade` of devopsnow-agent resets the span collector config) | `kubectl -n mb-o11y get pods`; `python3 deploy/o11y/org6/test_queries.py`; re-add the fan-out (traces/martianbank pipeline) |
+| ClickHouse crash-loops with "Code: 246 CORRUPTED_DATA" | OBI eBPF uprobes change the binary in memory | `skip_binary_checksum_checks` is set in `deploy/o11y/10-clickhouse.yaml`: keep it |
+| The org 6 page doesn't reach Incidents (404) | contact point holds a masked URL | `python3 deploy/o11y/org6/provision.py routing` (reads the real URL inside the Incidents pod) |
+| Changing a query | `queries.py` is the single source | edit it → `test_queries.py` → `provision.py` → `python3 deploy/aiden/gen-skills.py && deploy/aiden/apply.sh` |
 | `handoff.py`: "Secret … not readable" | kube context | `kubectl config use-context fe-stackgen-run` |
 
 ## Known gaps (as of 2026-11-25)
@@ -80,7 +87,14 @@ All of these are logged in #community-devops (CISO rule). Revoke after the event
   baseline for customer-auth only, green on the fix).
 - The stackgen-incidents `work-orders` branch (0.24.25/0.24.26 commits) is local only: appcd-dev access for srclosson
   returns 404.
-- Org 6's datasource reads the whole stephgen-medussa VM tenant (no per-org filter). Fine for Aiden's read-only key; a
-  separate VictoriaMetrics tenant is the post-event option.
+- **World model:** `martian-bank-sre` asks for `world_model_enabled: true`, but the platform keeps it off for the
+  reinvent-booth workspace (even the SRE app's own investigator reads false). It needs the Aiden team to enable it.
+  Until then it isn't part of the live demo.
+- **Aiden for SRE alert pull:** the SRE app pulls Grafana alerts only through a **Grafana**-type integration. Add
+  one in reinvent-booth (URL https://stephgen-medussa.observe.devopsnow.cloud, org 6 viewer key). Then org 6's 20
+  alerts get triaged and grouped, and Incidents mirrors them (SRE_* env is already set).
+- Incidents' saved notification channels (from Nov 18) were lost when SESSION_SECRET was rotated on 2026-11-25:
+  re-enter them if Incidents should notify anyone.
+- The devopsnow fan-out is out-of-band on a Helm-managed ConfigMap: a `helm upgrade` of devopsnow-agent removes it.
 - Remaining build items: `booth check-rca` (auto-compare against golden) and one clean end-to-end rehearsal with the
   final script.

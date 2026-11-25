@@ -17,6 +17,12 @@ ObserveNow alert ──▶ Incidents (incident) ──ack──▶ Aiden for SRE
         ──▶ DevOps: policy gate + merge ──▶ Argo CD sync ──▶ Aiden for SRE: verify ──▶ work order verified ──▶ incident resolved
 ```
 
+## Where the data lives
+Martian Bank has its own observability store: ClickHouse in namespace `mb-o11y` (traces from OBI eBPF, pod logs,
+Kubernetes metrics and events, browser RUM), shown in ObserveNow **org 6 "AWS re:Invent"**: 5 dashboards, 20 alert rules
+(1 that pages, 10 developer-style, 9 platform). Aiden investigates with SQL against that ClickHouse. Everything is code in
+`deploy/o11y/` and `deploy/aiden/`; `queries.py` is the single source of SQL for dashboards, alerts, skills and booth checks.
+
 ## Same outcome every run
 Every input is pinned: the failure (exactly `limits.cpu=200m`), the load (30 Locust users plus a 3-worker login rush), the
 alert threshold (p95 > 4 s), Aiden's evidence queries and report shape, the work-order wording
