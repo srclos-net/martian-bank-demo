@@ -18,6 +18,7 @@ spec:
             containers:
                 - name: transactions
                   image: {{ .Values.image.repository }}-transactions{{ if .Values.image.tag }}:{{ .Values.image.tag }}{{ end }}
+                  {{- include "martianbank.resources" (dict "root" $ "svc" "transactions") | nindent 18 }}
                   envFrom:
                     - configMapRef:
                         name: configmap-martianbank

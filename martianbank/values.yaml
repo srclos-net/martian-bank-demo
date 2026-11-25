@@ -120,3 +120,8 @@ DB_URL:
 
 locust: 
   enabled: false
+
+# Per-service container resources (requests/limits), keyed by service name:
+# ui, nginx, dashboard, accounts, loan, transactions, customer-auth,
+# atm-locator, locust, mongodb. Empty = unbounded (upstream behaviour).
+capacity: {}

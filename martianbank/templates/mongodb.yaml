@@ -21,6 +21,7 @@ spec:
           - mountPath: /data/db
             name: mo-data
         image: mongo
+        {{- include "martianbank.resources" (dict "root" $ "svc" "mongodb") | nindent 8 }}
         env:
           - name: MONGO_INITDB_ROOT_USERNAME
             value: root

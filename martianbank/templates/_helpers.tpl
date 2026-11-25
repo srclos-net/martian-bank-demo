@@ -60,3 +60,16 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Per-service container resources, declared in Git under .Values.capacity.<svc>.
+Renders nothing when the service has no entry (upstream behaviour: unbounded).
+Usage: {{- include "martianbank.resources" (dict "root" $ "svc" "accounts") | nindent 10 }}
+*/}}
+{{- define "martianbank.resources" -}}
+{{- $cap := .root.Values.capacity | default dict -}}
+{{- with index $cap .svc }}
+resources:
+{{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}

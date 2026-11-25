@@ -27,8 +27,26 @@ locust:
 ingress:
   enabled: false
 
-# NOTE: the chart templates ignore .Values.resources entirely, so no resource
-# requests can be set here — the workload runs unbounded (demo-grade).
+# Capacity declared in Git (chart helper "martianbank.resources"). Policy
+# (policy/capacity.rego) requires CPU+memory requests and limits on every
+# workload, CPU limit >= 250m. Memory limits sit ~3x above the 7-day peak
+# working set (ui runs the Vite dev server: ~3 GiB peak).
+#
+# The customer-auth entry lives between the booth markers: the re:Invent demo
+# (docs/reinvent/) starts with it EMPTY (the GitOps blind spot), the InfraOps
+# scan's PR fills it, and `deploy/booth/booth reset` empties it again.
+capacity:
+  ui:            {requests: {cpu: 100m, memory: 1Gi},   limits: {cpu: "1", memory: 4Gi}}
+  nginx:         {requests: {cpu: 25m,  memory: 64Mi},  limits: {cpu: 500m, memory: 192Mi}}
+  dashboard:     {requests: {cpu: 50m,  memory: 96Mi},  limits: {cpu: "1", memory: 384Mi}}
+  accounts:      {requests: {cpu: 50m,  memory: 128Mi}, limits: {cpu: "1", memory: 384Mi}}
+  loan:          {requests: {cpu: 50m,  memory: 128Mi}, limits: {cpu: "1", memory: 384Mi}}
+  transactions:  {requests: {cpu: 50m,  memory: 128Mi}, limits: {cpu: "1", memory: 384Mi}}
+  atm-locator:   {requests: {cpu: 50m,  memory: 96Mi},  limits: {cpu: "1", memory: 384Mi}}
+  locust:        {requests: {cpu: 100m, memory: 256Mi}, limits: {cpu: "2", memory: 1Gi}}
+  mongodb:       {requests: {cpu: 100m, memory: 256Mi}, limits: {cpu: "2", memory: 1Gi}}
+  # >>> booth:customer-auth-capacity
+  # <<< booth:customer-auth-capacity
 
 autoscaling:
   enabled: false

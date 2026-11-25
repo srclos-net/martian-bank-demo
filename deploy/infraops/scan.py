@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""InfraOps scan for the martian-bank namespace (re:Invent booth demo).
+
+Compares LIVE workloads against what Git declares (the chart rendered with
+deploy/values-civo.yaml, exactly as Argo CD renders it), runs the capacity
+policy (policy/capacity.rego) against both, and optionally opens a reconcile
+PR that declares the missing capacity in Git.
+
+Why this exists: Argo CD only diffs fields Git declares. A `kubectl patch`
+that ADDS a field Git never mentions (e.g. a CPU limit) leaves the app
+"Synced/Healthy" and self-heal never reverts it. This scan doesn't have that
+blind spot: it compares every container's resources, not just declared ones.
+
+MODE (env):
+  scan        report only (ConfigMap infraops-report + stdout)
+  scan-pr     report, and open the reconcile PR when there are findings
+  close-prs   close open infraops/* PRs and delete infraops/* branches (reset)
+"""
+import base64
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+import tarfile
+import io
+import urllib.request
+import urllib.error
+
+NS = os.environ.get("NAMESPACE", "martian-bank")
+REPO = os.environ.get("REPO", "srclos-net/martian-bank-demo")
+BRANCH = os.environ.get("BASE_BRANCH", "main")
+MODE = os.environ.get("MODE", "scan")
+TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
+WORK = os.environ.get("WORK", "/work")
+PROFILE = os.environ.get("PROFILE", "/scripts/capacity-profile.json")
+VALUES = "deploy/values-civo.yaml"
+MARK_START = "  # >>> booth:"
+MARK_END = "  # <<< booth:"
+
+
+def sh(cmd, inp=None, check=True):
+    r = subprocess.run(cmd, input=inp, capture_output=True, text=True)
+    if check and r.returncode != 0:
+        sys.exit(f"command failed: {' '.join(cmd)}\n{r.stderr}")
+    return r.stdout
+
+
+def gh(method, path, body=None):
+    req = urllib.request.Request(
+        f"https://api.github.com{path}",
+        method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={
+            "Authorization": f"Bearer {TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "martian-bank-infraops-scan",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        sys.exit(f"GitHub {method} {path}: {e.code} {e.read().decode()[:300]}")
+
+
+# ---------------------------------------------------------------- quantities
+def cpu_m(v):
+    v = str(v)
+    return float(v[:-1]) if v.endswith("m") else float(v) * 1000
+
+
+MEM = {"Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40, "K": 1e3, "M": 1e6, "G": 1e9, "k": 1e3}
+
+
+def mem_b(v):
+    v = str(v)
+    for suf, mul in MEM.items():
+        if v.endswith(suf):
+            return float(v[: -len(suf)]) * mul
+    return float(v)
+
+
+def norm(res):
+    out = {}
+    for kind in ("requests", "limits"):
+        for r, v in ((res or {}).get(kind) or {}).items():
+            out[f"{kind}.{r}"] = cpu_m(v) if r == "cpu" else mem_b(v) if r == "memory" else str(v)
+    return out
+
+
+def show(res):
+    if not res:
+        return "(none)"
+    parts = []
+    for kind in ("requests", "limits"):
+        d = (res or {}).get(kind) or {}
+        if d:
+            parts.append(kind + " " + ", ".join(f"{k}={v}" for k, v in sorted(d.items())))
+    return "; ".join(parts) or "(none)"
+
+
+# ---------------------------------------------------------------- inputs
+def fetch_git():
+    url = f"https://codeload.github.com/{REPO}/tar.gz/refs/heads/{BRANCH}"
+    with urllib.request.urlopen(url, timeout=60) as r:
+        data = r.read()
+    src = os.path.join(WORK, "src")
+    os.makedirs(src, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as t:
+        t.extractall(src, filter="data")
+    root = os.path.join(src, os.listdir(src)[0])
+    rendered = sh(["helm", "template", "martian-bank", f"{root}/martianbank", "-f", f"{root}/{VALUES}"])
+    manifests = "".join(
+        "\n---\n" + open(os.path.join(root, "deploy/manifests", f)).read()
+        for f in sorted(os.listdir(os.path.join(root, "deploy/manifests")))
+        if f.endswith((".yaml", ".yml"))
+    )
+    docs = json.loads(sh(["yq", "-o=json", "-I=0", "ea", "[.] | map(select(. != null))", "-"], inp=rendered + manifests))
+    return root, docs, None
+
+
+def live_deployments():
+    return json.loads(sh(["kubectl", "get", "deploy", "-n", NS, "-o", "json", "--show-managed-fields"]))["items"]
+
+
+def resource_owner(dep, cname):
+    """Which field manager last set this container's resources (and when)."""
+    key = 'k:{"name":"%s"}' % cname
+    best = None
+    for mf in dep["metadata"].get("managedFields", []):
+        f = (((mf.get("fieldsV1") or {}).get("f:spec") or {}).get("f:template") or {})
+        c = (((f.get("f:spec") or {}).get("f:containers") or {}).get(key) or {})
+        if "f:resources" in c:
+            if best is None or mf.get("time", "") > best.get("time", ""):
+                best = mf
+    if not best:
+        return None
+    return {"manager": best.get("manager"), "operation": best.get("operation"), "time": best.get("time")}
+
+
+def conftest(objs, label):
+    d = os.path.join(WORK, f"conftest-{label}")
+    os.makedirs(d, exist_ok=True)
+    for i, o in enumerate(objs):
+        with open(os.path.join(d, f"{i:03d}-{o['metadata']['name']}.json"), "w") as fh:
+            json.dump(o, fh)
+    pol = os.path.join(ROOT, "policy")
+    if not os.path.isdir(pol) or not any(f.endswith(".rego") for f in os.listdir(pol)):
+        sys.exit(f"no policy/*.rego in {REPO}@{BRANCH}: refusing to report a false green")
+    r = subprocess.run(["conftest", "test", d, "--policy", pol, "--all-namespaces", "--output", "json",
+                        "--no-color"], capture_output=True, text=True)
+    try:
+        results = json.loads(r.stdout)
+    except ValueError:
+        sys.exit(f"conftest error (rc={r.returncode}): {r.stderr[:500]}")
+    fails = []
+    for res in results:
+        for f in res.get("failures") or []:
+            fails.append(f["msg"])
+    return sorted(set(fails))
+
+
+# ---------------------------------------------------------------- PR
+def open_pr(report_md, svcs):
+    profile = json.load(open(PROFILE))
+    missing = [s for s in svcs if s not in profile]
+    if missing:
+        print(f"no capacity profile for {missing}; PR will only cover {[s for s in svcs if s in profile]}")
+    svcs = [s for s in svcs if s in profile]
+    if not svcs:
+        return None
+    for pr in gh("GET", f"/repos/{REPO}/pulls?state=open&per_page=50"):
+        if pr["head"]["ref"].startswith("infraops/"):
+            print(f"reconcile PR already open: {pr['html_url']}")
+            return pr["html_url"]
+    f = gh("GET", f"/repos/{REPO}/contents/{VALUES}?ref={BRANCH}")
+    text = base64.b64decode(f["content"]).decode()
+    lines = text.split("\n")
+    for s in svcs:
+        start = next(i for i, l in enumerate(lines) if l.startswith(f"{MARK_START}{s}-capacity"))
+        end = next(i for i, l in enumerate(lines) if l.startswith(f"{MARK_END}{s}-capacity"))
+        lines[start + 1:end] = [f"  {s}: {profile[s]}"]
+    new = "\n".join(lines)
+    if new == text:
+        print("values already declare the capacity; nothing to PR")
+        return None
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    branch = f"infraops/declare-capacity-{stamp}"
+    base_sha = gh("GET", f"/repos/{REPO}/git/ref/heads/{BRANCH}")["object"]["sha"]
+    gh("POST", f"/repos/{REPO}/git/refs", {"ref": f"refs/heads/{branch}", "sha": base_sha})
+    gh("PUT", f"/repos/{REPO}/contents/{VALUES}", {
+        "message": f"InfraOps: declare {', '.join(svcs)} capacity in Git (reconcile live drift)",
+        "content": base64.b64encode(new.encode()).decode(),
+        "sha": f["sha"],
+        "branch": branch,
+    })
+    body = (
+        "**StackGen InfraOps — drift reconcile.** Live state in `martian-bank` has capacity settings "
+        "Git never declared, so Argo CD reports *Synced* while production runs something else. This PR "
+        "declares the capacity in Git so the policy gate can check it and Argo CD owns it again.\n\n"
+        + report_md
+        + "\n\n_Merging this lets Argo CD replace the out-of-band setting on the next sync._"
+    )
+    pr = gh("POST", f"/repos/{REPO}/pulls", {
+        "title": f"InfraOps: declare {', '.join(svcs)} capacity in Git (drift + policy CAP-001/2/3)",
+        "head": branch, "base": BRANCH, "body": body,
+    })
+    print(f"opened reconcile PR: {pr['html_url']}")
+    return pr["html_url"]
+
+
+def close_prs():
+    if not TOKEN:
+        sys.exit("close-prs needs GITHUB_TOKEN")
+    for pr in gh("GET", f"/repos/{REPO}/pulls?state=open&per_page=50"):
+        if pr["head"]["ref"].startswith("infraops/"):
+            gh("PATCH", f"/repos/{REPO}/pulls/{pr['number']}", {"state": "closed"})
+            print(f"closed {pr['html_url']}")
+    for ref in gh("GET", f"/repos/{REPO}/git/matching-refs/heads/infraops/"):
+        gh("DELETE", f"/repos/{REPO}/git/{ref['ref']}")
+        print(f"deleted {ref['ref']}")
+
+
+# ---------------------------------------------------------------- main
+if MODE == "close-prs":
+    close_prs()
+    sys.exit(0)
+
+ROOT, git_docs, git_dir = fetch_git()
+desired = {d["metadata"]["name"]: d for d in git_docs if d.get("kind") == "Deployment"}
+live = live_deployments()
+
+drift = []
+for dep in live:
+    name = dep["metadata"]["name"]
+    want = desired.get(name)
+    if not want:
+        drift.append({"deployment": name, "container": "*", "detail": "exists live but not in Git"})
+        continue
+    wc = {c["name"]: c for c in want["spec"]["template"]["spec"]["containers"]}
+    for c in dep["spec"]["template"]["spec"]["containers"]:
+        g = wc.get(c["name"], {})
+        if norm(c.get("resources")) != norm(g.get("resources")):
+            drift.append({
+                "deployment": name, "container": c["name"],
+                "live": show(c.get("resources")), "git": show(g.get("resources")),
+                "set_by": resource_owner(dep, c["name"]),
+            })
+
+for d in live:  # conftest wants clean objects
+    d["metadata"].pop("managedFields", None)
+policy_live = conftest(live, "live")
+policy_git = conftest(list(desired.values()), "git")
+
+ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+md = [f"### InfraOps scan — namespace `{NS}` vs `{REPO}@{BRANCH}` ({ts})", ""]
+md.append(f"**Drift (live ≠ Git): {len(drift)}**")
+for d in drift:
+    who = d.get("set_by") or {}
+    by = f" — set by `{who.get('manager')}` ({who.get('operation')}, {who.get('time')})" if who else ""
+    md.append(f"- `{d['deployment']}/{d['container']}`: live **{d.get('live', d.get('detail'))}**, Git **{d.get('git', '-')}**{by}")
+md += ["", f"**Policy, live state: {len(policy_live)} violation(s)**"] + [f"- {m}" for m in policy_live]
+md += ["", f"**Policy, Git state: {len(policy_git)} violation(s)**"] + [f"- {m}" for m in policy_git]
+report_md = "\n".join(md)
+
+svcs = sorted({re.match(r"CAP-\d+ ([^/]+)/", m).group(1) for m in policy_git + policy_live}
+              | {d["deployment"] for d in drift if d["container"] != "*"})
+pr_url = None
+if MODE == "scan-pr" and (drift or policy_git or policy_live):
+    if TOKEN:
+        pr_url = open_pr(report_md, svcs)
+    else:
+        print("findings, but no GITHUB_TOKEN (Secret infraops-github): not opening a PR")
+
+report = {"time": ts, "drift": drift, "policy_live": policy_live, "policy_git": policy_git,
+          "services": svcs, "pr": pr_url}
+print(report_md)
+print(json.dumps(report))
+os.makedirs(os.path.join(WORK, "out"), exist_ok=True)
+open(os.path.join(WORK, "out", "report.md"), "w").write(report_md + (f"\n\nPR: {pr_url}\n" if pr_url else "\n"))
+open(os.path.join(WORK, "out", "report.json"), "w").write(json.dumps(report, indent=2))
+cm = sh(["kubectl", "create", "configmap", "infraops-report", "-n", NS,
+         f"--from-file={WORK}/out/report.md", f"--from-file={WORK}/out/report.json",
+         "--dry-run=client", "-o", "yaml"])
+sh(["kubectl", "apply", "-f", "-"], inp=cm)

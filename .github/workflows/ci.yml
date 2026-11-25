@@ -35,16 +35,57 @@ jobs:
       sha: ${{ steps.check.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - id: check
         run: |
           msg="$(git log -1 --format=%s)"
           echo "last commit: $msg"
+          # Deploy-only changes (values, chart, manifests, policy, docs) must
+          # NOT rebuild + re-pin images: a re-pin rolls every pod, which would
+          # wreck the re:Invent booth loop (docs/reinvent/).
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            changed="$(git diff --name-only origin/${{ github.base_ref }}...HEAD)"
+          else
+            changed="$(git diff --name-only ${{ github.event.before }} HEAD 2>/dev/null || git diff --name-only HEAD~1 HEAD)"
+          fi
+          echo "changed files:"; echo "$changed"
+          code="$(echo "$changed" | grep -v -E '^(deploy/|docs/|policy/|martianbank/|\.github/)' | grep -v '^$' || true)"
           if echo "$msg" | grep -q '\[ci-auto\]'; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "$code" ]; then
+            echo "deploy-only change: skipping image builds"
             echo "build=false" >> "$GITHUB_OUTPUT"
           else
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+  policy:
+    # The capacity policy gate (policy/capacity.rego): renders the chart with
+    # the cluster values exactly as Argo CD will, adds the raw manifests, and
+    # runs conftest. Red = a workload ships without declared capacity.
+    name: policy gate (capacity)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+      - name: Install conftest
+        run: |
+          curl -sSL https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_Linux_x86_64.tar.gz | tar xz conftest
+          sudo mv conftest /usr/local/bin/
+      - name: Render Git state (what Argo CD will apply)
+        run: |
+          helm template martian-bank martianbank -f deploy/values-civo.yaml > rendered.yaml
+          cat deploy/manifests/*.yaml >> rendered.yaml
+      - name: conftest
+        run: |
+          conftest test rendered.yaml --policy policy --all-namespaces --output table | tee conftest.txt
+          echo '### Capacity policy (conftest)' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"; cat conftest.txt >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ! grep -q FAIL conftest.txt
 
   images:
     runs-on: ubuntu-latest
@@ -115,7 +156,8 @@ jobs:
     # repo secret exists. Shipyard does NOT push images: these are
     # throwaway preview stacks, not production artifacts.
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    needs: guard
+    if: github.event_name == 'pull_request' && needs.guard.outputs.build == 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Wait for the Shipyard preview environment
@@ -127,7 +169,8 @@ jobs:
 
   pr-build:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    needs: guard
+    if: github.event_name == 'pull_request' && needs.guard.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
